@@ -24,15 +24,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-async function main() {
-  const countryCode = process.argv[2];
-  const question = process.argv.slice(3).join(" ").trim();
-
-  if (!countryCode || !question) {
-    console.log('Uso: node ask-ai.js PE "tu pregunta"');
-    process.exit(1);
-  }
-
+async function askAI(countryCode, question) {
   const embeddingResponse = await openai.embeddings.create({
     model: "text-embedding-3-small",
     input: question,
@@ -43,12 +35,11 @@ async function main() {
   const { data, error } = await supabase.rpc("match_knowledge_by_country", {
     query_embedding: queryEmbedding,
     filter_country: countryCode,
-    match_count: 4,
+    match_count: 3,
   });
 
   if (error) {
-    console.error("Error en búsqueda:", error);
-    process.exit(1);
+    throw new Error(`Error en búsqueda: ${error.message}`);
   }
 
   const results = Array.isArray(data) ? data : [];
@@ -58,8 +49,7 @@ async function main() {
     .join("\n\n");
 
   if (!context) {
-    console.log("No tengo esa información exacta para este país.");
-    process.exit(0);
+    return "No tengo esa información exacta para este país.";
   }
 
   const response = await openai.responses.create({
@@ -81,6 +71,7 @@ Si no hay información específica del país, responde exactamente:
 
 No inventes.
 Responde claro, breve y profesional.
+Máximo 3 líneas.
         `.trim(),
       },
       {
@@ -98,10 +89,7 @@ ${question}
     ],
   });
 
-  console.log(response.output_text || "No tengo esa información exacta para este país.");
+  return response.output_text || "No tengo esa información exacta para este país.";
 }
 
-main().catch((err) => {
-  console.error("Error:", err.message || err);
-  process.exit(1);
-});
+module.exports = { askAI };
