@@ -1,20 +1,30 @@
 require("dotenv").config({ quiet: true });
 
 const express = require("express");
-const { askAI } = require("./rag-service");
+const { askAI, saveConversationTurn } = require("./rag-service");
 
 const app = express();
 app.use(express.json());
 
 app.post("/ask", async (req, res) => {
   try {
-    const { question, country_code } = req.body;
+    const { question, country_code, user_id } = req.body;
 
     if (!question) {
       return res.status(400).json({ error: "Falta question" });
     }
 
-    const response = await askAI(country_code || "PE", question);
+    if (!user_id) {
+      return res.status(400).json({ error: "Falta user_id" });
+    }
+
+    const countryCode = country_code || "PE";
+
+    await saveConversationTurn(user_id, countryCode, "user", question);
+
+    const response = await askAI(user_id, countryCode, question);
+
+    await saveConversationTurn(user_id, countryCode, "assistant", response);
 
     res.json({ response });
   } catch (err) {
