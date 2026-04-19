@@ -1,6 +1,7 @@
 const express = require("express");
 const dotenv = require("dotenv");
 const { exec } = require("child_process");
+const path = require("path");
 
 dotenv.config();
 
@@ -11,13 +12,11 @@ app.post("/ask", async (req, res) => {
   try {
     const { question, country_code } = req.body;
 
-  const path = require("path");
-
-  const cmd = `node ${path.join(__dirname, "ask-ai.js")} ${country_code || "PE"} "${question}"`;
+    const cmd = `node ${path.join(__dirname, "ask-ai.js")} ${country_code || "PE"} "${question}"`;
 
     exec(cmd, (error, stdout, stderr) => {
       if (error) {
-        return res.status(500).json({ error: stderr });
+        return res.status(500).json({ error: stderr || error.message });
       }
 
       res.json({ response: stdout });
