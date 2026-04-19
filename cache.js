@@ -1,35 +1,36 @@
 const cache = new Map();
 
-function getCacheKey(country, question) {
-  return `${country}:${question.toLowerCase().trim()}`;
+function normalize(text) {
+  return String(text || "").trim().toLowerCase();
 }
 
-function getFromCache(country, question) {
-  const key = getCacheKey(country, question);
-  return cache.get(key);
+function getCacheKey(countryCode, question) {
+  return `${countryCode}:${normalize(question)}`;
 }
 
-function saveToCache(country, question, response) {
-  const key = getCacheKey(country, question);
-  cache.set(key, {
-    response,
-    timestamp: Date.now(),
+function getCached(countryCode, question) {
+  const item = cache.get(getCacheKey(countryCode, question));
+  if (!item) return null;
+
+  const ageMs = Date.now() - item.createdAt;
+  const ttlMs = 10 * 60 * 1000; // 10 minutos
+
+  if (ageMs > ttlMs) {
+    cache.delete(getCacheKey(countryCode, question));
+    return null;
+  }
+
+  return item.value;
+}
+
+function setCached(countryCode, question, value) {
+  cache.set(getCacheKey(countryCode, question), {
+    value,
+    createdAt: Date.now(),
   });
 }
 
-// opcional: limpiar cache viejo (ej: 10 min)
-function cleanCache() {
-  const now = Date.now();
-  for (const [key, value] of cache.entries()) {
-    if (now - value.timestamp > 10 * 60 * 1000) {
-      cache.delete(key);
-    }
-  }
-}
-
-setInterval(cleanCache, 5 * 60 * 1000);
-
 module.exports = {
-  getFromCache,
-  saveToCache,
+  getCached,
+  setCached,
 };

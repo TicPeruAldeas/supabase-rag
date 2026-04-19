@@ -8,7 +8,7 @@ app.use(express.json());
 
 app.post("/ask", async (req, res) => {
   try {
-    const { question, country_code, user_id } = req.body;
+    const { question, country_code, user_id, source } = req.body;
 
     if (!question) {
       return res.status(400).json({ error: "Falta question" });
@@ -19,15 +19,54 @@ app.post("/ask", async (req, res) => {
     }
 
     const countryCode = country_code || "PE";
+    const inputSource = source || "api";
 
-    await saveConversationTurn(user_id, countryCode, "user", question);
+    // 1. Guarda mensaje del usuario en segundo plano
+    saveConversationTurn({
+      userId: user_id,
+      countryCode,
+      role: "user",
+      message: question,
+      source: inputSource,
+      metadata: {
+        event: "incoming_message",
+      },
+    }).catch((err) => {
+      console.error("Error guardando mensaje user:", err.message);
+    });
 
-    const response = await askAI(user_id, countryCode, question);
+    // 2. Responde
+    const result = await askAI(user_id, countryCode, question);
 
-    await saveConversationTurn(user_id, countryCode, "assistant", response);
+    res.json({
+      response: result.response,
+      debug: {
+        total_ms: result.metadata?.total_ms || 0,
+        search_type: result.metadata?.search_type || null,
+        history_used: result.metadata?.history_used || 0,
+        search_ms: result.metadata?.search_ms || 0,
+        semantic_ms: result.metadata?.semantic_ms || 0,
+        llm_ms: result.metadata?.llm_ms || 0,
+      },
+    });
 
-    res.json({ response });
+    // 3. Guarda respuesta del assistant en segundo plano
+    saveConversationTurn({
+      userId: user_id,
+      countryCode,
+      role: "assistant",
+      message: result.response,
+      source: inputSource,
+      metadata: {
+        event: "assistant_response",
+        ...(result.metadata || {}),
+      },
+    }).catch((err) => {
+      console.error("Error guardando mensaje assistant:", err.message);
+    });
+
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
