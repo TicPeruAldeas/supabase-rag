@@ -104,7 +104,7 @@ app.post("/webhook", async (req, res) => {
       console.log("Mensaje recibido:", text);
 
       // llamar a tu API IA
-      const response = await fetch("https://TU-API/ask", {
+      const response = await fetch("https://web-production-c7dbd.up.railway.app/ask", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
