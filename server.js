@@ -1,6 +1,7 @@
-import express from "express";
-import dotenv from "dotenv";
-import { exec } from "child_process";
+const express = require("express");
+const dotenv = require("dotenv");
+const { exec } = require("child_process");
+const path = require("path");
 
 dotenv.config();
 
@@ -11,18 +12,22 @@ app.post("/ask", async (req, res) => {
   try {
     const { question, country_code } = req.body;
 
-    const path = require("path");
+    if (!question) {
+      return res.status(400).json({ error: "Falta question" });
+    }
 
-    const cmd = `node ${path.join(__dirname, "ask-ai.js")} ${country_code || "PE"} "${question}"`;
+    const safeQuestion = String(question).replace(/"/g, '\\"');
+    const cmd = `node "${path.join(__dirname, "ask-ai.js")}" ${country_code || "PE"} "${safeQuestion}"`;
 
     exec(cmd, (error, stdout, stderr) => {
       if (error) {
-        return res.status(500).json({ error: stderr });
+        return res.status(500).json({
+          error: stderr || error.message,
+        });
       }
 
       res.json({ response: stdout });
     });
-
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
