@@ -58,7 +58,6 @@ async function main() {
     .join("\n\n");
 
   if (!context) {
-    console.log("\n=== RESPUESTA IA ===\n");
     console.log("No tengo esa información exacta para este país.");
     process.exit(0);
   }
@@ -99,7 +98,6 @@ ${question}
     ],
   });
 
-  console.log("\n=== RESPUESTA IA ===\n");
   console.log(response.output_text || "No tengo esa información exacta para este país.");
 }
 
