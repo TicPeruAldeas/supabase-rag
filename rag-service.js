@@ -92,10 +92,42 @@ async function searchSemantic(countryCode, question) {
   return data || [];
 }
 
+function normalizeChunk(text) {
+  return String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildDirectAnswer(question, chunks) {
+  if (!chunks || chunks.length === 0) {
+    return null;
+  }
+
+  const first = normalizeChunk(chunks[0].chunk_text);
+
+  if (!first) return null;
+
+  if (first.length <= 350) {
+    return first;
+  }
+
+  return first.slice(0, 350).trim() + "...";
+}
+
+function shouldUseDirectAnswer(question, searchType, chunks) {
+  if (!chunks || chunks.length === 0) return false;
+
+  const q = String(question || "").trim();
+
+  if (searchType === "fast") return true;
+  if (q.length < 35) return true;
+
+  return false;
+}
+
 async function askAI(userId, countryCode, question) {
   const totalStart = Date.now();
 
-  // 1. CACHE
   const cached = getCached(countryCode, question);
   if (cached) {
     return {
@@ -111,7 +143,6 @@ async function askAI(userId, countryCode, question) {
     };
   }
 
-  // 2. HISTORIAL + BÚSQUEDA RÁPIDA EN PARALELO
   const searchStart = Date.now();
 
   const [history, fastData] = await Promise.all([
@@ -119,14 +150,12 @@ async function askAI(userId, countryCode, question) {
     searchFast(countryCode, question),
   ]);
 
-  let context = "";
+  let chunks = [];
   let searchType = "fast";
   let semanticMs = 0;
 
   if (fastData.length > 0) {
-    context = fastData
-      .map((item, i) => `Fuente ${i + 1} (${item.source_name}):\n${item.chunk_text}`)
-      .join("\n\n");
+    chunks = fastData;
   } else {
     searchType = "semantic";
 
@@ -148,19 +177,44 @@ async function askAI(userId, countryCode, question) {
       };
     }
 
-    context = vectorData
-      .map((item, i) => `Fuente ${i + 1}:\n${item.chunk_text}`)
-      .join("\n\n");
+    chunks = vectorData.map((item) => ({
+      chunk_text: item.chunk_text,
+      source_name: item.source_name || "fuente",
+    }));
   }
 
   const searchMs = Date.now() - searchStart;
 
-  // 3. LLM
+  // RESPUESTA DIRECTA SIN LLM
+  if (shouldUseDirectAnswer(question, searchType, chunks)) {
+    const directAnswer = buildDirectAnswer(question, chunks);
+
+    if (directAnswer) {
+      setCached(countryCode, question, directAnswer);
+
+      return {
+        response: directAnswer,
+        metadata: {
+          search_type: `${searchType}_direct`,
+          total_ms: Date.now() - totalStart,
+          search_ms: searchMs,
+          semantic_ms: semanticMs,
+          llm_ms: 0,
+          history_used: history.length,
+        },
+      };
+    }
+  }
+
+  const context = chunks
+    .map((item, i) => `Fuente ${i + 1} (${item.source_name || "fuente"}):\n${item.chunk_text}`)
+    .join("\n\n");
+
   const llmStart = Date.now();
 
   const response = await openai.responses.create({
     model: "gpt-4o-mini",
-    max_output_tokens: 90,
+    max_output_tokens: 60,
     input: [
       {
         role: "system",
@@ -170,7 +224,7 @@ Responde SOLO con información del país indicado.
 No inventes.
 Máximo 2 líneas.
 No uses markdown.
-Usa el historial reciente solo si ayuda a resolver la pregunta actual.
+Responde muy breve.
         `.trim(),
       },
       ...history,
@@ -192,7 +246,6 @@ ${question}
   const llmMs = Date.now() - llmStart;
   const finalResponse = response.output_text || "No tengo esa información.";
 
-  // 4. GUARDAR EN CACHE
   setCached(countryCode, question, finalResponse);
 
   return {
