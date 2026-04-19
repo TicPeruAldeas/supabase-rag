@@ -11,7 +11,7 @@ app.post("/ask", async (req, res) => {
   try {
     const { question, country_code } = req.body;
 
-    const cmd = node ask-ai.js ${country_code || "PE"} "${question}";
+  const cmd = node ask-ai.js ${country_code || "PE"} "${question}";
 
     exec(cmd, (error, stdout, stderr) => {
       if (error) {
