@@ -43,7 +43,7 @@ async function main() {
   const { data, error } = await supabase.rpc("match_knowledge_by_country", {
     query_embedding: queryEmbedding,
     filter_country: countryCode,
-    match_count: 4,
+    match_count: 3,
   });
 
   if (error) {
@@ -63,7 +63,7 @@ async function main() {
   }
 
   const response = await openai.responses.create({
-    model: "gpt-4.1-mini",
+    model: "gpt-4o-mini",
     input: [
       {
         role: "system",

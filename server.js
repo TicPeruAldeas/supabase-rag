@@ -14,9 +14,9 @@ app.post("/ask", async (req, res) => {
       return res.status(400).json({ error: "Falta question" });
     }
 
-    const answer = await askAI(country_code || "PE", question);
+    const response = await askAI(country_code || "PE", question);
 
-    res.json({ response: answer });
+    res.json({ response });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
