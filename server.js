@@ -1,6 +1,6 @@
-import express from "express";
-import dotenv from "dotenv";
-import { exec } from "child_process";
+const express = require("express");
+const dotenv = require("dotenv");
+const { exec } = require("child_process");
 
 dotenv.config();
 
