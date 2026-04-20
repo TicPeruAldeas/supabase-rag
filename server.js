@@ -6,6 +6,121 @@ const { askAI, saveConversationTurn } = require("./rag-service");
 const app = express();
 app.use(express.json());
 
+const ALLOWED_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+async function sendWhatsAppMessage(to, message) {
+  const url = `https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: {
+        body: message,
+      },
+    }),
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(JSON.stringify(data));
+  }
+
+  return data;
+}
+
+app.get("/webhook", (req, res) => {
+  const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN;
+
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === verifyToken) {
+    console.log("Webhook verificado correctamente");
+    return res.status(200).send(challenge);
+  }
+
+  return res.sendStatus(403);
+});
+
+app.post("/webhook", async (req, res) => {
+  try {
+    const entry = req.body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+    const message = value?.messages?.[0];
+    const metadata = value?.metadata;
+
+    if (!message) {
+      return res.sendStatus(200);
+    }
+
+    const incomingPhoneNumberId = metadata?.phone_number_id;
+    const from = message.from;
+    const text = message.text?.body;
+
+    // 🔒 SOLO TEST NUMBER
+    if (incomingPhoneNumberId !== ALLOWED_PHONE_NUMBER_ID) {
+      console.log("IGNORADO: no es test number ->", incomingPhoneNumberId);
+      return res.sendStatus(200);
+    }
+
+    if (!text) {
+      return res.sendStatus(200);
+    }
+
+    console.log("Mensaje recibido TEST:", from, text);
+
+    // Guardado no bloqueante
+    saveConversationTurn({
+      userId: from,
+      countryCode: "PE",
+      role: "user",
+      message: text,
+      source: "whatsapp_test",
+      metadata: {
+        event: "incoming_whatsapp_message",
+        wa_message_id: message.id || null,
+        phone_number_id: incomingPhoneNumberId,
+      },
+    }).catch((err) => {
+      console.error("Error guardando user:", err.message);
+    });
+
+    const result = await askAI(from, "PE", text);
+
+    await sendWhatsAppMessage(from, result.response);
+
+    saveConversationTurn({
+      userId: from,
+      countryCode: "PE",
+      role: "assistant",
+      message: result.response,
+      source: "whatsapp_test",
+      metadata: {
+        event: "outgoing_whatsapp_message",
+        phone_number_id: incomingPhoneNumberId,
+        ...(result.metadata || {}),
+      },
+    }).catch((err) => {
+      console.error("Error guardando assistant:", err.message);
+    });
+
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error("Error en webhook:", err.message);
+    return res.sendStatus(500);
+  }
+});
+
 app.post("/ask", async (req, res) => {
   try {
     const { question, country_code, user_id, source } = req.body;
@@ -21,7 +136,6 @@ app.post("/ask", async (req, res) => {
     const countryCode = country_code || "PE";
     const inputSource = source || "api";
 
-    // 1. Guarda mensaje del usuario en segundo plano
     saveConversationTurn({
       userId: user_id,
       countryCode,
@@ -32,25 +146,16 @@ app.post("/ask", async (req, res) => {
         event: "incoming_message",
       },
     }).catch((err) => {
-      console.error("Error guardando mensaje user:", err.message);
+      console.error("Error guardando user:", err.message);
     });
 
-    // 2. Responde
     const result = await askAI(user_id, countryCode, question);
 
     res.json({
       response: result.response,
-      debug: {
-        total_ms: result.metadata?.total_ms || 0,
-        search_type: result.metadata?.search_type || null,
-        history_used: result.metadata?.history_used || 0,
-        search_ms: result.metadata?.search_ms || 0,
-        semantic_ms: result.metadata?.semantic_ms || 0,
-        llm_ms: result.metadata?.llm_ms || 0,
-      },
+      debug: result.metadata || {},
     });
 
-    // 3. Guarda respuesta del assistant en segundo plano
     saveConversationTurn({
       userId: user_id,
       countryCode,
@@ -62,11 +167,10 @@ app.post("/ask", async (req, res) => {
         ...(result.metadata || {}),
       },
     }).catch((err) => {
-      console.error("Error guardando mensaje assistant:", err.message);
+      console.error("Error guardando assistant:", err.message);
     });
-
   } catch (err) {
-    console.error(err);
+    console.error("Error en /ask:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -75,70 +179,5 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log("Servidor corriendo en puerto", PORT);
+  console.log("Solo se procesará test number:", ALLOWED_PHONE_NUMBER_ID);
 });
-
-app.get("/webhook", (req, res) => {
-  const VERIFY_TOKEN = "mi_token_seguro";
-
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("Webhook verificado");
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
-  }
-});
-app.post("/webhook", async (req, res) => {
-  try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const message = changes?.value?.messages?.[0];
-
-    if (message) {
-      const from = message.from;
-      const text = message.text?.body;
-
-      console.log("Mensaje recibido:", text);
-
-      // llamar a tu API IA
-      const response = await fetch("https://web-production-c7dbd.up.railway.app/ask", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          question: text,
-          country_code: "PE",
-          user_id: from,
-        }),
-      });
-
-      const data = await response.json();
-
-      await sendWhatsAppMessage(from, data.response);
-    }
-
-    res.sendStatus(200);
-  } catch (error) {
-    console.error(error);
-    res.sendStatus(500);
-  }
-});
-async function sendWhatsAppMessage(to, message) {
-  await fetch(`https://graph.facebook.com/v19.0/${process.env.PHONE_NUMBER_ID}/messages`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body: message },
-    }),
-  });
-}
