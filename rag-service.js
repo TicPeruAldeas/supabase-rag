@@ -13,9 +13,9 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+const SMALL_TALK_REGEX = /^(hola|buenos|buenas|hi|hey|gracias|ok|okay|sí|si|no|perfecto|genial|entendido|👍|😊)[\s!?.]*$/i;
 
 async function getRecentHistory(userId, countryCode, limit = 4) {
   const { data, error } = await supabase
@@ -29,49 +29,23 @@ async function getRecentHistory(userId, countryCode, limit = 4) {
 
   if (error) throw error;
 
-  return (data || [])
-    .reverse()
-    .map((item) => ({
-      role: item.role,
-      content: item.message,
-    }));
+  return (data || []).reverse().map((item) => ({
+    role: item.role,
+    content: item.message,
+  }));
 }
 
 async function saveConversationTurn({
-  userId,
-  countryCode,
-  role,
-  message,
-  source = "api",
-  metadata = {},
+  userId, countryCode, role, message, source = "api", metadata = {},
 }) {
   const { error } = await supabase
     .from("conversations")
-    .insert({
-      user_id: userId,
-      country_code: countryCode,
-      role,
-      message,
-      source,
-      metadata,
-    });
+    .insert({ user_id: userId, country_code: countryCode, role, message, source, metadata });
 
   if (error) throw error;
 }
 
-async function searchFast(countryCode, question) {
-  const { data, error } = await supabase
-    .from("knowledge_chunks")
-    .select("chunk_text, source_name")
-    .ilike("chunk_text", `%${question}%`)
-    .eq("country_code", countryCode)
-    .limit(2);
-
-  if (error) throw error;
-  return data || [];
-}
-
-async function searchSemantic(countryCode, question) {
+async function searchSemantic(countryCode, question, matchCount = 3) {
   const embeddingResponse = await openai.embeddings.create({
     model: "text-embedding-3-small",
     input: question,
@@ -79,23 +53,70 @@ async function searchSemantic(countryCode, question) {
 
   const queryEmbedding = embeddingResponse.data[0].embedding;
 
-  const { data, error } = await supabase.rpc(
-    "match_knowledge_by_country",
-    {
-      query_embedding: queryEmbedding,
-      filter_country: countryCode,
-      match_count: 2,
-    }
-  );
+  const { data, error } = await supabase.rpc("match_knowledge_by_country", {
+    query_embedding: queryEmbedding,
+    filter_country: countryCode,
+    match_count: matchCount,
+  });
 
   if (error) throw error;
+
+  // Filtrar por similitud mínima — descarta chunks irrelevantes
+  return (data || []).filter(item => item.similarity >= 0.45);
+}
+
+async function searchFast(countryCode, question, limit = 2) {
+  const keywords = question
+    .split(/\s+/)
+    .filter((w) => w.length > 4)
+    .slice(0, 3);
+
+  if (keywords.length === 0) return [];
+
+  const keyword = keywords.sort((a, b) => b.length - a.length)[0];
+
+  const { data, error } = await supabase
+    .from("knowledge_chunks")
+    .select("chunk_text, source_name")
+    .ilike("chunk_text", `%${keyword}%`)
+    .eq("country_code", countryCode)
+    .limit(limit);
+
+  if (error) return [];
   return data || [];
+}
+
+function mergeResults(semanticResults, fastResults) {
+  const seen = new Set();
+  const merged = [];
+
+  for (const item of [...semanticResults, ...fastResults]) {
+    const key = item.chunk_text?.slice(0, 80);
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      merged.push(item);
+    }
+  }
+
+  return merged.slice(0, 4);
 }
 
 async function askAI(userId, countryCode, question) {
   const totalStart = Date.now();
 
-  // 1. CACHE
+  // 1. SMALL TALK
+  if (SMALL_TALK_REGEX.test(question.trim())) {
+    return {
+      response: "¡Hola! ¿En qué puedo ayudarte hoy?",
+      metadata: {
+        search_type: "small_talk",
+        total_ms: Date.now() - totalStart,
+        search_ms: 0, semantic_ms: 0, llm_ms: 0, history_used: 0,
+      },
+    };
+  }
+
+  // 2. CACHE
   const cached = getCached(countryCode, question);
   if (cached) {
     return {
@@ -103,59 +124,42 @@ async function askAI(userId, countryCode, question) {
       metadata: {
         search_type: "cache",
         total_ms: Date.now() - totalStart,
-        search_ms: 0,
-        semantic_ms: 0,
-        llm_ms: 0,
-        history_used: 0,
+        search_ms: 0, semantic_ms: 0, llm_ms: 0, history_used: 0,
       },
     };
   }
 
-  // 2. HISTORIAL + BÚSQUEDA RÁPIDA EN PARALELO
+  // 3. HISTORIAL + BÚSQUEDA HÍBRIDA EN PARALELO
   const searchStart = Date.now();
 
-  const [history, fastData] = await Promise.all([
+  const [history, semanticData, fastData] = await Promise.all([
     getRecentHistory(userId, countryCode, 4),
-    searchFast(countryCode, question),
+    searchSemantic(countryCode, question, 3),
+    searchFast(countryCode, question, 2),
   ]);
-
-  let context = "";
-  let searchType = "fast";
-  let semanticMs = 0;
-
-  if (fastData.length > 0) {
-    context = fastData
-      .map((item, i) => `Fuente ${i + 1} (${item.source_name}):\n${item.chunk_text}`)
-      .join("\n\n");
-  } else {
-    searchType = "semantic";
-
-    const semanticStart = Date.now();
-    const vectorData = await searchSemantic(countryCode, question);
-    semanticMs = Date.now() - semanticStart;
-
-    if (!vectorData || vectorData.length === 0) {
-      return {
-        response: "No tengo esa información exacta para este país.",
-        metadata: {
-          search_type: searchType,
-          total_ms: Date.now() - totalStart,
-          search_ms: Date.now() - searchStart,
-          semantic_ms: semanticMs,
-          llm_ms: 0,
-          history_used: history.length,
-        },
-      };
-    }
-
-    context = vectorData
-      .map((item, i) => `Fuente ${i + 1}:\n${item.chunk_text}`)
-      .join("\n\n");
-  }
 
   const searchMs = Date.now() - searchStart;
 
-  // 3. LLM
+  // 4. FUSIONAR Y DEDUPLICAR
+  const allResults = mergeResults(semanticData, fastData);
+
+  if (allResults.length === 0) {
+    return {
+      response: "No tengo esa información exacta para este país.",
+      metadata: {
+        search_type: "no_results",
+        total_ms: Date.now() - totalStart,
+        search_ms: searchMs, semantic_ms: searchMs, llm_ms: 0,
+        history_used: history.length,
+      },
+    };
+  }
+
+  const context = allResults
+    .map((item, i) => `Fuente ${i + 1}${item.source_name ? ` (${item.source_name})` : ""}:\n${item.chunk_text}`)
+    .join("\n\n");
+
+  // 5. LLM
   const llmStart = Date.now();
 
   const response = await openai.responses.create({
@@ -165,26 +169,17 @@ async function askAI(userId, countryCode, question) {
       {
         role: "system",
         content: `
-Eres un asistente empresarial.
-Responde SOLO con información del país indicado.
-No inventes.
-Máximo 2 líneas.
-No uses markdown.
-Usa el historial reciente solo si ayuda a resolver la pregunta actual.
+Eres un asistente de Aldeas Infantiles SOS Perú.
+Responde SOLO con información del contexto proporcionado.
+Si el contexto no responde claramente la pregunta, di: "No tengo esa información exacta para este país."
+No inventes datos. Máximo 2 líneas. Sin markdown.
+Usa el historial solo si es relevante para la pregunta actual.
         `.trim(),
       },
       ...history,
       {
         role: "user",
-        content: `
-País: ${countryCode}
-
-Contexto:
-${context}
-
-Pregunta actual:
-${question}
-        `.trim(),
+        content: `País: ${countryCode}\n\nContexto:\n${context}\n\nPregunta: ${question}`.trim(),
       },
     ],
   });
@@ -192,23 +187,24 @@ ${question}
   const llmMs = Date.now() - llmStart;
   const finalResponse = response.output_text || "No tengo esa información.";
 
-  // 4. GUARDAR EN CACHE
-  setCached(countryCode, question, finalResponse);
+  // 6. CACHE — solo respuestas útiles
+  if (!finalResponse.includes("No tengo esa información")) {
+    setCached(countryCode, question, finalResponse);
+  }
 
   return {
     response: finalResponse,
     metadata: {
-      search_type: searchType,
+      search_type: "hybrid",
+      chunks_used: allResults.length,
+      semantic_chunks: semanticData.length,
+      fast_chunks: fastData.length,
       total_ms: Date.now() - totalStart,
       search_ms: searchMs,
-      semantic_ms: semanticMs,
       llm_ms: llmMs,
       history_used: history.length,
     },
   };
 }
 
-module.exports = {
-  askAI,
-  saveConversationTurn,
-};
+module.exports = { askAI, saveConversationTurn };
