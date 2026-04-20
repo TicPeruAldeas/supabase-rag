@@ -45,7 +45,7 @@ async function saveConversationTurn({
   if (error) throw error;
 }
 
-async function searchSemantic(countryCode, question, matchCount = 3) {
+async function searchSemantic(countryCode, question, matchCount = 5) {
   const embeddingResponse = await openai.embeddings.create({
     model: "text-embedding-3-small",
     input: question,
@@ -61,11 +61,10 @@ async function searchSemantic(countryCode, question, matchCount = 3) {
 
   if (error) throw error;
 
-  // Filtrar por similitud mínima — descarta chunks irrelevantes
   return (data || []).filter(item => item.similarity >= 0.45);
 }
 
-async function searchFast(countryCode, question, limit = 2) {
+async function searchFast(countryCode, question, limit = 3) {
   const keywords = question
     .split(/\s+/)
     .filter((w) => w.length > 4)
@@ -98,7 +97,7 @@ function mergeResults(semanticResults, fastResults) {
     }
   }
 
-  return merged.slice(0, 4);
+  return merged.slice(0, 6);
 }
 
 async function askAI(userId, countryCode, question) {
@@ -134,8 +133,8 @@ async function askAI(userId, countryCode, question) {
 
   const [history, semanticData, fastData] = await Promise.all([
     getRecentHistory(userId, countryCode, 4),
-    searchSemantic(countryCode, question, 3),
-    searchFast(countryCode, question, 2),
+    searchSemantic(countryCode, question, 5),
+    searchFast(countryCode, question, 3),
   ]);
 
   const searchMs = Date.now() - searchStart;
@@ -145,7 +144,7 @@ async function askAI(userId, countryCode, question) {
 
   if (allResults.length === 0) {
     return {
-      response: "No tengo esa información exacta para este país.",
+      response: "No tengo esa información exacta, ¿puedes ser más específico?",
       metadata: {
         search_type: "no_results",
         total_ms: Date.now() - totalStart,
@@ -164,16 +163,17 @@ async function askAI(userId, countryCode, question) {
 
   const response = await openai.responses.create({
     model: "gpt-4o-mini",
-    max_output_tokens: 90,
+    max_output_tokens: 180,
     input: [
       {
         role: "system",
         content: `
-Eres un asistente de Aldeas Infantiles SOS Perú.
-Responde SOLO con información del contexto proporcionado.
-Si el contexto no responde claramente la pregunta, di: "No tengo esa información exacta para este país."
-No inventes datos. Máximo 2 líneas. Sin markdown.
-Usa el historial solo si es relevante para la pregunta actual.
+Eres el asistente virtual de Aldeas Infantiles SOS Perú.
+Cuando la pregunta sea vaga o corta, infiere que se refiere a la organización y sus programas.
+Responde con la información más completa y útil que encuentres en el contexto.
+Si hay varias ubicaciones, programas o datos relevantes, menciónalos todos.
+Si el contexto no tiene información suficiente, di: "No tengo esa información exacta, ¿puedes ser más específico?"
+No inventes datos. Máximo 4 líneas. Sin markdown. Sin asteriscos.
         `.trim(),
       },
       ...history,
@@ -185,7 +185,7 @@ Usa el historial solo si es relevante para la pregunta actual.
   });
 
   const llmMs = Date.now() - llmStart;
-  const finalResponse = response.output_text || "No tengo esa información.";
+  const finalResponse = response.output_text || "No tengo esa información exacta, ¿puedes ser más específico?";
 
   // 6. CACHE — solo respuestas útiles
   if (!finalResponse.includes("No tengo esa información")) {
