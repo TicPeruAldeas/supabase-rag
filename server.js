@@ -11,7 +11,6 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 
 async function sendWhatsAppMessage(to, message) {
-  // ✅ v21.0 + variable unificada
   const url = `https://graph.facebook.com/v21.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
 
   const response = await fetch(url, {
@@ -33,11 +32,6 @@ async function sendWhatsAppMessage(to, message) {
   return data;
 }
 
-if (incomingPhoneNumberId !== process.env.WHATSAPP_PHONE_NUMBER_ID) {
-  console.log(`⏭️  Ignorando mensaje de otro número: ${incomingPhoneNumberId}`);
-  return res.sendStatus(200);
-}
-
 // ── Verificación Meta ─────────────────────────────────────────
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -53,7 +47,7 @@ app.get("/webhook", (req, res) => {
 
 // ── Mensajes entrantes ────────────────────────────────────────
 app.post("/webhook", async (req, res) => {
-  res.sendStatus(200); // ✅ Siempre primero — evita reintento de Meta
+  res.sendStatus(200); // Siempre primero — evita reintento de Meta
 
   try {
     const value = req.body.entry?.[0]?.changes?.[0]?.value;
@@ -64,10 +58,12 @@ app.post("/webhook", async (req, res) => {
 
     const incomingPhoneNumberId = metadata?.phone_number_id;
 
-  
- // Acepta mensajes de cualquier número
-    console.log(`📱 Phone Number ID: ${incomingPhoneNumberId}`);
-    
+    // 🔒 Solo procesa mensajes del número configurado
+    if (incomingPhoneNumberId !== WHATSAPP_PHONE_NUMBER_ID) {
+      console.log(`⏭️  Ignorando - número no autorizado: ${incomingPhoneNumberId}`);
+      return;
+    }
+
     const from = message.from;
     const text = message.text?.body;
 
@@ -75,7 +71,7 @@ app.post("/webhook", async (req, res) => {
 
     console.log(`📩 [PE] ${from}: ${text}`);
 
-    // Guardar mensaje usuario (no bloqueante)
+    // Guardar mensaje usuario
     saveConversationTurn({
       userId: from,
       countryCode: "PE",
@@ -96,7 +92,7 @@ app.post("/webhook", async (req, res) => {
     await sendWhatsAppMessage(from, result.response);
     console.log(`✅ [PE] ${from} → ${result.metadata?.search_type} ${result.metadata?.total_ms}ms`);
 
-    // Guardar respuesta asistente (no bloqueante)
+    // Guardar respuesta asistente
     saveConversationTurn({
       userId: from,
       countryCode: "PE",
@@ -115,7 +111,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// ── Endpoint REST para testing ────────────────────────────────
+// ── Endpoint REST para testing / ChatFuel ─────────────────────
 app.post("/ask", async (req, res) => {
   try {
     const { question, country_code, user_id, source } = req.body;
