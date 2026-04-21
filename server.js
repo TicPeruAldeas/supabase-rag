@@ -59,12 +59,10 @@ app.post("/webhook", async (req, res) => {
 
     const incomingPhoneNumberId = metadata?.phone_number_id;
 
-    // 🔒 Solo procesa mensajes del número configurado
-    if (incomingPhoneNumberId !== WHATSAPP_PHONE_NUMBER_ID) {
-      console.log("IGNORADO — phone_number_id no coincide:", incomingPhoneNumberId);
-      return;
-    }
-
+  
+ // Acepta mensajes de cualquier número
+    console.log(`📱 Phone Number ID: ${incomingPhoneNumberId}`);
+    
     const from = message.from;
     const text = message.text?.body;
 
