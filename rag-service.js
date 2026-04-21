@@ -61,7 +61,7 @@ async function searchSemantic(countryCode, question, matchCount = 5) {
 
   if (error) throw error;
 
-  return (data || []).filter(item => item.similarity >= 0.45);
+  return (data || []).filter(item => item.similarity >= 0.35);
 }
 
 async function searchFast(countryCode, question, limit = 3) {
