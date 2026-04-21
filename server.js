@@ -143,7 +143,104 @@ app.post("/ask", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ── Endpoint para Make / ingestión de filas ───────────────────
+app.post("/ingest-row", async (req, res) => {
+  const INGEST_SECRET = process.env.INGEST_SECRET;
 
+  // Validar token secreto
+  const authHeader = req.headers["authorization"];
+  if (!authHeader || authHeader !== `Bearer ${INGEST_SECRET}`) {
+    return res.status(401).json({ error: "No autorizado" });
+  }
+
+  try {
+    const { ID, Categoria, Subtema, Pregunta, Respuesta, Tipo } = req.body;
+
+    if (!ID || !Pregunta || !Respuesta || !Tipo) {
+      return res.status(400).json({ error: "Faltan campos obligatorios" });
+    }
+
+    const flowType = Tipo.toString().trim().toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+    // Generar embedding
+    const embeddingResponse = await openai.embeddings.create({
+      model: "text-embedding-3-small",
+      input: Pregunta,
+    });
+    const embedding = embeddingResponse.data[0].embedding;
+
+    // Upsert en knowledge_flows
+    const { error: flowError } = await supabase
+      .from("knowledge_flows")
+      .upsert({
+        flow_id: ID,
+        category: Categoria || null,
+        subtopic: Subtema || null,
+        question: Pregunta,
+        answer: Respuesta,
+        flow_type: flowType,
+        country_code: "PE",
+        embedding,
+        source_name: "google_sheets",
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "flow_id" });
+
+    if (flowError) throw new Error(flowError.message);
+
+    // Si es paso a paso, procesar pasos
+    if (flowType === "paso a paso" || flowType === "paso_a_paso") {
+      const lines = Respuesta.split("\n").map(l => l.trim()).filter(Boolean);
+      const steps = [];
+      let currentStep = null;
+
+      for (const line of lines) {
+        const match = line.match(/^(\d+)\.\s+(.+)/);
+        if (match) {
+          if (currentStep) steps.push(currentStep);
+          currentStep = { number: parseInt(match[1]), text: match[2] };
+        } else if (currentStep) {
+          currentStep.text += " " + line;
+        }
+      }
+      if (currentStep) steps.push(currentStep);
+
+      if (steps.length > 0) {
+        // Eliminar pasos anteriores
+        await supabase.from("knowledge_steps").delete().eq("flow_id", ID);
+
+        // Insertar pasos nuevos con resumen IA
+        for (const step of steps) {
+          const summaryResponse = await openai.responses.create({
+            model: "gpt-4o-mini",
+            max_output_tokens: 60,
+            input: [
+              { role: "system", content: "Resume el siguiente paso en máximo 2 líneas cortas y claras en español. Sin markdown." },
+              { role: "user", content: `Paso ${step.number} de ${steps.length}:\n${step.text}` }
+            ]
+          });
+
+          await supabase.from("knowledge_steps").insert({
+            flow_id: ID,
+            step_number: step.number,
+            step_summary: summaryResponse.output_text.trim(),
+            step_detail: step.text,
+            country_code: "PE",
+            source_name: "google_sheets",
+            updated_at: new Date().toISOString(),
+          });
+        }
+      }
+    }
+
+    console.log(`✅ Fila ingestada desde Make: ${ID} [${flowType}]`);
+    res.json({ success: true, flow_id: ID, flow_type: flowType });
+
+  } catch (err) {
+    console.error("❌ Error en /ingest-row:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor en puerto ${PORT}`);
