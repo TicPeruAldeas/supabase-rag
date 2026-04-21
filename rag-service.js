@@ -20,7 +20,7 @@ const SMALL_TALK_REGEX = /^(hola|buenos|buenas|hi|hey|gracias|ok|okay|sí|si|no|
 async function detectIntent(userMessage) {
   const response = await openai.responses.create({
     model: "gpt-4o-mini",
-    max_output_tokens: 10,
+    max_output_tokens: 18,
     input: [
       {
         role: "system",
