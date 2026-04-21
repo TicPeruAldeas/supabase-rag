@@ -33,6 +33,11 @@ async function sendWhatsAppMessage(to, message) {
   return data;
 }
 
+if (incomingPhoneNumberId !== process.env.WHATSAPP_PHONE_NUMBER_ID) {
+  console.log(`⏭️  Ignorando mensaje de otro número: ${incomingPhoneNumberId}`);
+  return res.sendStatus(200);
+}
+
 // ── Verificación Meta ─────────────────────────────────────────
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
