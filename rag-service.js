@@ -215,9 +215,10 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
   }
 
   await updateStep(state.id, nextStep);
+  const isLastStep = nextStep >= state.total_steps;
   return {
-    response: `Paso ${nextStep} de ${state.total_steps}:\n\n${nextStepData.step_summary}\n\n¿Quieres más detalle, continuar al paso ${nextStep + 1 <= state.total_steps ? nextStep + 1 : "siguiente"}, o ya tienes todo claro?`,
-    metadata: { flow_type: "paso_a_paso", step: nextStep }
+  response: `Paso ${nextStep} de ${state.total_steps}:\n\n${nextStepData.step_summary}\n\n${isLastStep ? "Este es el último paso. ¿Quieres más detalle o ya tienes todo claro?" : `¿Quieres más detalle, continuar al paso ${nextStep + 1}, o ya tienes todo claro?`}`,
+  metadata: { flow_type: "paso_a_paso", step: nextStep }
   };
 }
 
