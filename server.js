@@ -1,4 +1,12 @@
 require("dotenv").config({ quiet: true });
+const { createClient } = require("@supabase/supabase-js");
+const OpenAI = require("openai").default;
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const express = require("express");
 const { askAI, saveConversationTurn } = require("./rag-service");
