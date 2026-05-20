@@ -1,4 +1,20 @@
 require("dotenv").config({ quiet: true });
+
+const REQUIRED_ENV = [
+  "SUPABASE_URL",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "OPENAI_API_KEY",
+  "WHATSAPP_PHONE_NUMBER_ID",
+  "WHATSAPP_TOKEN",
+  "WHATSAPP_VERIFY_TOKEN",
+  "INGEST_SECRET",
+];
+const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
+if (missing.length > 0) {
+  console.error(`❌ Variables de entorno faltantes: ${missing.join(", ")}`);
+  process.exit(1);
+}
+
 const { createClient } = require("@supabase/supabase-js");
 const OpenAI = require("openai").default;
 
