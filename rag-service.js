@@ -499,6 +499,82 @@ async function handlePasoAPaso(userId, countryCode, question, state, parent) {
   return result;
 }
 
+// ── LLM-as-a-Judge: evalúa calidad de respuesta RAG en background
+// Criterios: relevancia, fidelidad, utilidad (cada uno entre 0.0 y 1.0)
+// Usa claude-haiku-4-5 para minimizar costo del paso de evaluación.
+// Se llama fire-and-forget — no bloquea el envío del mensaje a WhatsApp.
+async function evaluateResponse(trace, question, context, response) {
+  if (!langfuse) return;
+
+  const EVAL_MODEL = "claude-haiku-4-5";
+
+  try {
+    const msg = await anthropic.messages.create({
+      model: EVAL_MODEL,
+      max_tokens: 80,
+      system: "Eres un evaluador de calidad de respuestas de chatbots. Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional ni explicaciones.",
+      messages: [
+        {
+          role: "user",
+          content: `Evalúa la respuesta del asistente con un score de 0.0 a 1.0 en cada criterio.
+
+PREGUNTA DEL USUARIO:
+${question}
+
+CONTEXTO RECUPERADO DE LA BASE DE CONOCIMIENTO:
+${context.substring(0, 2000)}
+
+RESPUESTA DEL ASISTENTE:
+${response}
+
+CRITERIOS DE EVALUACIÓN:
+- relevancia: ¿La respuesta aborda directamente la pregunta? (0.0 = completamente irrelevante, 1.0 = perfectamente relevante)
+- fidelidad: ¿La respuesta se basa solo en el contexto sin inventar datos? (0.0 = inventa datos, 1.0 = completamente fiel al contexto)
+- utilidad: ¿La respuesta resuelve la necesidad del usuario de forma clara? (0.0 = inútil, 1.0 = muy útil)
+
+Responde SOLO con el JSON. Ejemplo exacto: {"relevancia": 0.9, "fidelidad": 0.8, "utilidad": 0.7}`,
+        },
+      ],
+    });
+
+    const raw = (msg.content[0]?.text ?? "").trim();
+    const match = raw.match(/\{[^}]+\}/);
+    if (!match) {
+      console.warn("LLM-Judge: JSON no encontrado en respuesta:", raw.substring(0, 120));
+      return;
+    }
+
+    const scores = JSON.parse(match[0]);
+    const criteria = ["relevancia", "fidelidad", "utilidad"];
+
+    for (const name of criteria) {
+      const rawValue = scores[name];
+      if (typeof rawValue !== "number" || isNaN(rawValue)) {
+        console.warn(`LLM-Judge: score inválido para "${name}":`, rawValue);
+        continue;
+      }
+      const value = Math.max(0, Math.min(1, rawValue));
+
+      await langfuse.score({
+        traceId: trace.id,
+        name,
+        value,
+        dataType: "NUMERIC",
+        comment: `LLM-as-Judge (${EVAL_MODEL})`,
+      });
+    }
+
+    const r = scores.relevancia?.toFixed(2) ?? "?";
+    const f = scores.fidelidad?.toFixed(2) ?? "?";
+    const u = scores.utilidad?.toFixed(2) ?? "?";
+    console.log(`🧑‍⚖️ LLM-Judge: relevancia=${r} fidelidad=${f} utilidad=${u}`);
+
+    await langfuse.flushAsync();
+  } catch (err) {
+    console.error("Error LLM-Judge:", err.message);
+  }
+}
+
 // ── Core RAG ──────────────────────────────────────────────────
 async function askAI(userId, countryCode, question) {
   const totalStart = Date.now();
@@ -664,6 +740,10 @@ async function askAI(userId, countryCode, question) {
         cache_creation_tokens: cacheCreation,
       },
     });
+
+    // Fire-and-forget: evaluación LLM-as-Judge en background.
+    // No se awaita — la respuesta se envía a WhatsApp mientras Claude evalúa.
+    evaluateResponse(trace, question, context, finalResponse);
 
     if (!finalResponse.includes("No tengo esa información")) {
       setCached(countryCode, question, finalResponse);
