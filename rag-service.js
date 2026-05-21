@@ -162,7 +162,8 @@ async function updateStep(stateId, currentStep, status = "active") {
 }
 
 // ── Historial reciente ────────────────────────────────────────
-async function getRecentHistory(userId, countryCode, limit = 4) {
+// limit = 10 → últimos 5 mensajes del usuario + sus 5 respuestas (5 pares completos)
+async function getRecentHistory(userId, countryCode, limit = 10) {
   const { data, error } = await supabase
     .from("conversations")
     .select("role, message, created_at")
@@ -172,7 +173,13 @@ async function getRecentHistory(userId, countryCode, limit = 4) {
     .order("created_at", { ascending: false })
     .limit(limit);
   if (error) throw error;
-  return (data || []).reverse().map(item => ({ role: item.role, content: item.message }));
+
+  const messages = (data || []).reverse().map(item => ({ role: item.role, content: item.message }));
+
+  // La API de Claude requiere que los mensajes alternen user/assistant.
+  // Si por algún desfase el primer mensaje fuera del asistente, lo descartamos.
+  const firstUser = messages.findIndex(m => m.role === "user");
+  return firstUser > 0 ? messages.slice(firstUser) : messages;
 }
 
 // ── Guardar turno ─────────────────────────────────────────────
@@ -348,6 +355,7 @@ async function askAI(userId, countryCode, question) {
   const trace = mkTrace({
     name: "rag-query",
     userId,
+    sessionId: userId,   // agrupa todas las trazas del mismo número en Langfuse Sessions
     metadata: { countryCode, orgName },
     input: question,
   });
@@ -423,7 +431,7 @@ async function askAI(userId, countryCode, question) {
     const hybridSpan = trace.span({ name: "search-hybrid", input: question });
 
     const [history, semanticData, fastData] = await Promise.all([
-      getRecentHistory(userId, countryCode, 4),
+      getRecentHistory(userId, countryCode, 10),  // 5 pares user/assistant
       // searchSemantic crea: span("search-semantic") > span("openai-embedding") + span("supabase-match-knowledge")
       searchSemantic(countryCode, question, 5, hybridSpan),
       // searchFast crea: span("search-keyword")
