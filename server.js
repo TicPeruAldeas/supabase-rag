@@ -3,9 +3,8 @@ require("dotenv").config({ quiet: true });
 const REQUIRED_ENV = [
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
-  "OPENAI_API_KEY",
-  "WHATSAPP_PHONE_NUMBER_ID",
-  "WHATSAPP_TOKEN",
+  "OPENAI_API_KEY",        // embeddings (text-embedding-3-small)
+  "ANTHROPIC_API_KEY",     // LLM (Claude)
   "WHATSAPP_VERIFY_TOKEN",
   "INGEST_SECRET",
 ];
@@ -17,31 +16,68 @@ if (missing.length > 0) {
 
 const { createClient } = require("@supabase/supabase-js");
 const OpenAI = require("openai").default;
+const Anthropic = require("@anthropic-ai/sdk");
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const express = require("express");
 const { askAI, saveConversationTurn } = require("./rag-service");
+
+const CLAUDE_MODEL = "claude-sonnet-4-6";
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-const WHATSAPP_PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+// ── Mapa multi-país: phoneNumberId → { countryCode, phoneNumberId, token }
+// Formato nuevo: WHATSAPP_PHONE_NUMBER_ID_PE + WHATSAPP_TOKEN_PE (por cada país)
+// Formato legacy: WHATSAPP_PHONE_NUMBER_ID + WHATSAPP_TOKEN (se asume PE)
+const COUNTRY_MAP = {};
+
+for (const [key, value] of Object.entries(process.env)) {
+  const match = key.match(/^WHATSAPP_PHONE_NUMBER_ID_([A-Z]{2})$/);
+  if (match && value) {
+    const cc = match[1];
+    const token = process.env[`WHATSAPP_TOKEN_${cc}`];
+    if (token) {
+      COUNTRY_MAP[value] = { countryCode: cc, phoneNumberId: value, token };
+    } else {
+      console.warn(`⚠️  WHATSAPP_TOKEN_${cc} no configurado — se ignorará ${cc}`);
+    }
+  }
+}
+
+// Compatibilidad con formato de un solo país
+if (Object.keys(COUNTRY_MAP).length === 0 &&
+    process.env.WHATSAPP_PHONE_NUMBER_ID &&
+    process.env.WHATSAPP_TOKEN) {
+  const id = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  COUNTRY_MAP[id] = { countryCode: "PE", phoneNumberId: id, token: process.env.WHATSAPP_TOKEN };
+  console.warn("⚠️  Formato legacy detectado. Migra a WHATSAPP_PHONE_NUMBER_ID_XX / WHATSAPP_TOKEN_XX");
+}
+
+if (Object.keys(COUNTRY_MAP).length === 0) {
+  console.error("❌ No hay países configurados. Define WHATSAPP_PHONE_NUMBER_ID_XX y WHATSAPP_TOKEN_XX para cada país.");
+  process.exit(1);
+}
+
+const configuredCountries = [...new Set(Object.values(COUNTRY_MAP).map(c => c.countryCode))];
+console.log(`🌎 Países configurados: ${configuredCountries.join(", ")}`);
+
 const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 
-async function sendWhatsAppMessage(to, message) {
-  const url = `https://graph.facebook.com/v21.0/${WHATSAPP_PHONE_NUMBER_ID}/messages`;
-
+// ── Enviar mensaje por WhatsApp (usa credenciales del país) ───
+async function sendWhatsAppMessage(to, message, phoneNumberId, token) {
+  const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
   const response = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -51,7 +87,6 @@ async function sendWhatsAppMessage(to, message) {
       text: { body: message },
     }),
   });
-
   const data = await response.json();
   if (!response.ok) throw new Error(JSON.stringify(data));
   return data;
@@ -82,24 +117,24 @@ app.post("/webhook", async (req, res) => {
     if (!message) return;
 
     const incomingPhoneNumberId = metadata?.phone_number_id;
+    const countryConfig = COUNTRY_MAP[incomingPhoneNumberId];
 
-    // 🔒 Solo procesa mensajes del número configurado
-    if (incomingPhoneNumberId !== WHATSAPP_PHONE_NUMBER_ID) {
-      console.log(`⏭️  Ignorando - número no autorizado: ${incomingPhoneNumberId}`);
+    if (!countryConfig) {
+      console.log(`⏭️  Ignorando — número no configurado: ${incomingPhoneNumberId}`);
       return;
     }
 
+    const { countryCode, phoneNumberId, token } = countryConfig;
     const from = message.from;
     const text = message.text?.body;
 
     if (!text) return;
 
-    console.log(`📩 [PE] ${from}: ${text}`);
+    console.log(`📩 [${countryCode}] ${from}: ${text}`);
 
-    // Guardar mensaje usuario
     saveConversationTurn({
       userId: from,
-      countryCode: "PE",
+      countryCode,
       role: "user",
       message: text,
       source: "whatsapp",
@@ -110,17 +145,14 @@ app.post("/webhook", async (req, res) => {
       },
     }).catch((err) => console.error("Error guardando user:", err.message));
 
-    // RAG
-    const result = await askAI(from, "PE", text);
+    const result = await askAI(from, countryCode, text);
 
-    // Enviar respuesta
-    await sendWhatsAppMessage(from, result.response);
-    console.log(`✅ [PE] ${from} → ${result.metadata?.search_type} ${result.metadata?.total_ms}ms`);
+    await sendWhatsAppMessage(from, result.response, phoneNumberId, token);
+    console.log(`✅ [${countryCode}] ${from} → ${result.metadata?.search_type} ${result.metadata?.total_ms}ms`);
 
-    // Guardar respuesta asistente
     saveConversationTurn({
       userId: from,
-      countryCode: "PE",
+      countryCode,
       role: "assistant",
       message: result.response,
       source: "whatsapp",
@@ -168,27 +200,28 @@ app.post("/ask", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 // ── Endpoint para Make / ingestión de filas ───────────────────
 app.post("/ingest-row", async (req, res) => {
   const INGEST_SECRET = process.env.INGEST_SECRET;
 
-  // Validar token secreto
   const authHeader = req.headers["authorization"];
   if (!authHeader || authHeader !== `Bearer ${INGEST_SECRET}`) {
     return res.status(401).json({ error: "No autorizado" });
   }
 
   try {
-    const { ID, Categoria, Subtema, Pregunta, Respuesta, Tipo } = req.body;
+    const { ID, Categoria, Subtema, Pregunta, Respuesta, Tipo, country_code } = req.body;
 
     if (!ID || !Pregunta || !Respuesta || !Tipo) {
-      return res.status(400).json({ error: "Faltan campos obligatorios" });
+      return res.status(400).json({ error: "Faltan campos obligatorios: ID, Pregunta, Respuesta, Tipo" });
     }
 
+    const rowCountryCode = country_code || "PE";
     const flowType = Tipo.toString().trim().toLowerCase()
-      .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      .normalize("NFD").replace(/[̀-ͯ]/g, "");
 
-    // Generar embedding
+    // Generar embedding con OpenAI (Anthropic no tiene API de embeddings)
     const embeddingResponse = await openai.embeddings.create({
       model: "text-embedding-3-small",
       input: Pregunta,
@@ -205,7 +238,7 @@ app.post("/ingest-row", async (req, res) => {
         question: Pregunta,
         answer: Respuesta,
         flow_type: flowType,
-        country_code: "PE",
+        country_code: rowCountryCode,
         embedding,
         source_name: "google_sheets",
         updated_at: new Date().toISOString(),
@@ -213,7 +246,7 @@ app.post("/ingest-row", async (req, res) => {
 
     if (flowError) throw new Error(flowError.message);
 
-    // Si es paso a paso, procesar pasos
+    // Si es paso a paso, procesar pasos con resumen de Claude
     if (flowType === "paso a paso" || flowType === "paso_a_paso") {
       const lines = Respuesta.split("\n").map(l => l.trim()).filter(Boolean);
       const steps = [];
@@ -231,26 +264,25 @@ app.post("/ingest-row", async (req, res) => {
       if (currentStep) steps.push(currentStep);
 
       if (steps.length > 0) {
-        // Eliminar pasos anteriores
         await supabase.from("knowledge_steps").delete().eq("flow_id", ID);
 
-        // Insertar pasos nuevos con resumen IA
         for (const step of steps) {
-          const summaryResponse = await openai.responses.create({
-            model: "gpt-4o-mini",
-            max_output_tokens: 60,
-            input: [
-              { role: "system", content: "Resume el siguiente paso en máximo 2 líneas cortas y claras en español. Sin markdown." },
-              { role: "user", content: `Paso ${step.number} de ${steps.length}:\n${step.text}` }
-            ]
+          const summaryResponse = await anthropic.messages.create({
+            model: CLAUDE_MODEL,
+            max_tokens: 100,
+            system: "Resume el siguiente paso en máximo 2 líneas cortas y claras en español. Sin markdown.",
+            messages: [{
+              role: "user",
+              content: `Paso ${step.number} de ${steps.length}:\n${step.text}`,
+            }],
           });
 
           await supabase.from("knowledge_steps").insert({
             flow_id: ID,
             step_number: step.number,
-            step_summary: summaryResponse.output_text.trim(),
+            step_summary: summaryResponse.content[0].text.trim(),
             step_detail: step.text,
-            country_code: "PE",
+            country_code: rowCountryCode,
             source_name: "google_sheets",
             updated_at: new Date().toISOString(),
           });
@@ -258,16 +290,16 @@ app.post("/ingest-row", async (req, res) => {
       }
     }
 
-    console.log(`✅ Fila ingestada desde Make: ${ID} [${flowType}]`);
-    res.json({ success: true, flow_id: ID, flow_type: flowType });
+    console.log(`✅ Fila ingestada: ${ID} [${flowType}] [${rowCountryCode}]`);
+    res.json({ success: true, flow_id: ID, flow_type: flowType, country_code: rowCountryCode });
 
   } catch (err) {
     console.error("❌ Error en /ingest-row:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor en puerto ${PORT}`);
-  console.log(`📱 Phone Number ID: ${WHATSAPP_PHONE_NUMBER_ID}`);
 });
