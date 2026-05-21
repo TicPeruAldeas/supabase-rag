@@ -93,12 +93,18 @@ async function detectIntent(userMessage, parent) {
   const msg = await anthropic.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 16,
-    system: `Clasifica el mensaje en una de estas intenciones:
+    system: [
+      {
+        type: "text",
+        text: `Clasifica el mensaje en una de estas intenciones:
 - "mas_detalle": quiere más información sobre lo explicado
 - "siguiente": quiere continuar al siguiente paso
 - "terminar": agradece, entendió, se despide
 - "otro": pregunta algo completamente diferente
 Responde SOLO con una palabra: mas_detalle, siguiente, terminar, otro`,
+        cache_control: { type: "ephemeral" },
+      },
+    ],
     messages: [{ role: "user", content: userMessage }],
   });
 
@@ -106,6 +112,10 @@ Responde SOLO con una palabra: mas_detalle, siguiente, terminar, otro`,
   gen.end({
     output: intent,
     usage: { input: msg.usage.input_tokens, output: msg.usage.output_tokens },
+    metadata: {
+      cache_read_tokens: msg.usage.cache_read_input_tokens ?? 0,
+      cache_creation_tokens: msg.usage.cache_creation_input_tokens ?? 0,
+    },
   });
   return intent;
 }
@@ -458,15 +468,31 @@ No inventes datos. Máximo 4 líneas. Sin markdown. Sin asteriscos.`;
     const claudeResponse = await anthropic.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 300,
-      system: systemPrompt,
+      system: [
+        {
+          type: "text",
+          text: systemPrompt,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
       messages,
     });
 
     const finalResponse = claudeResponse.content[0]?.text || "No tengo esa información exacta, ¿puedes ser más específico?";
 
+    const cacheRead = claudeResponse.usage.cache_read_input_tokens ?? 0;
+    const cacheCreation = claudeResponse.usage.cache_creation_input_tokens ?? 0;
+    if (cacheRead > 0) {
+      console.log(`💾 Cache hit RAG [${countryCode}]: ${cacheRead} tokens (~${Math.round(cacheRead * 0.9)} ahorrados)`);
+    }
+
     gen.end({
       output: finalResponse,
       usage: { input: claudeResponse.usage.input_tokens, output: claudeResponse.usage.output_tokens },
+      metadata: {
+        cache_read_tokens: cacheRead,
+        cache_creation_tokens: cacheCreation,
+      },
     });
 
     if (!finalResponse.includes("No tengo esa información")) {
