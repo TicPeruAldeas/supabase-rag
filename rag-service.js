@@ -361,7 +361,7 @@ async function searchFlow(countryCode, question) {
         query_embedding: queryEmbedding,
         filter_country: countryCode,
         match_count: 1,
-        min_similarity: 0.50,
+        min_similarity: 0.30,
       });
       if (error) {
         dbObs.update({ output: { error: error.message } });
@@ -398,7 +398,7 @@ async function searchSemantic(countryCode, question, matchCount = 5) {
         dbObs.update({ output: { error: error.message } });
         return [];
       }
-      const res = (data || []).filter(item => item.similarity >= 0.45);
+      const res = (data || []).filter(item => item.similarity >= 0.25);
       dbObs.update({ output: { count: res.length } });
       return res;
     });
