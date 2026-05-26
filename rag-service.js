@@ -206,7 +206,7 @@ PAUTAS DE RESPUESTA PARA ESTE ASISTENTE
 ════════════════════════════════════════
 
 1. Basa todas las respuestas en el contexto recuperado de la base de conocimiento de la organización en este país. No inventes datos, fechas, nombres, montos ni cifras que no estén en el contexto.
-2. Si el contexto no cubre la pregunta del usuario, responde: "No tengo esa información exacta. ¿Puedes contarme más o contactar directamente con la organización?"
+2. Si el contexto no cubre completamente la pregunta del usuario, comprende su intención y responde de forma cálida y empática: reconoce el tema que pregunta, indica que no tienes esa información específica en este momento, y recomienda contactar directamente con la organización. Nunca uses frases genéricas o robóticas como "no tengo esa información".
 3. Mantén siempre un tono empático, cálido y profesional.
 4. Nunca compartas información personal de beneficiarios, donantes, trabajadores o voluntarios.
 5. Responde siempre en español, adaptando el registro al país del usuario.
@@ -672,9 +672,42 @@ async function askAI(userId, countryCode, question) {
 
     if (allResults.length === 0) {
       hybridSpan.end({ output: { count: 0 } });
-      const response = "No tengo esa información exacta. ¿Puedes contarme más sobre lo que necesitas?";
-      trace.update({ output: response, metadata: { search_type: "no_results" } });
-      return { response, metadata: { search_type: "no_results", total_ms: Date.now() - totalStart } };
+
+      // Sin contexto en la BD — Claude entiende la intención y responde con empatía
+      const noCtxGen = trace.generation({
+        name: "claude-no-context",
+        model: CLAUDE_MODEL,
+        input: question,
+        modelParameters: { maxTokens: 150 },
+      });
+
+      const noCtxMsg = await anthropic.messages.create({
+        model: CLAUDE_MODEL,
+        max_tokens: 150,
+        system: [
+          { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+          {
+            type: "text",
+            text: `Organización activa: ${orgName}. País: ${countryCode}. No hay información disponible en la base de conocimiento para esta consulta. Entiende la intención del usuario, responde de forma cálida y empática reconociendo el tema que pregunta, indica que no tienes esa información específica, y recomiéndale contactar directamente a ${orgName}.`,
+          },
+        ],
+        messages: [{ role: "user", content: question }],
+      });
+
+      const response = noCtxMsg.content[0]?.text
+        || `Lo siento, no tengo esa información en este momento. Te recomiendo contactar directamente a ${orgName} para que te orienten mejor.`;
+
+      noCtxGen.end({
+        output: response,
+        usage: { input: noCtxMsg.usage.input_tokens, output: noCtxMsg.usage.output_tokens },
+        metadata: {
+          cache_read_tokens: noCtxMsg.usage.cache_read_input_tokens ?? 0,
+          cache_creation_tokens: noCtxMsg.usage.cache_creation_input_tokens ?? 0,
+        },
+      });
+
+      trace.update({ output: response, metadata: { search_type: "no_results_llm" } });
+      return { response, metadata: { search_type: "no_results_llm", total_ms: Date.now() - totalStart } };
     }
 
     hybridSpan.end({ output: { semantic: semanticData.length, keyword: fastData.length, merged: allResults.length } });
@@ -724,7 +757,8 @@ async function askAI(userId, countryCode, question) {
     });
     const claudeResponse = await stream.finalMessage();
 
-    const finalResponse = claudeResponse.content[0]?.text || "No tengo esa información exacta, ¿puedes ser más específico?";
+    const finalResponse = claudeResponse.content[0]?.text
+      || `Lo siento, no tengo esa información en este momento. Te recomiendo contactar directamente a ${orgName} para que te orienten mejor.`;
 
     const cacheRead = claudeResponse.usage.cache_read_input_tokens ?? 0;
     const cacheCreation = claudeResponse.usage.cache_creation_input_tokens ?? 0;
