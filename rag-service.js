@@ -378,7 +378,7 @@ async function searchFlow(countryCode, question) {
         query_embedding: queryEmbedding,
         filter_country: countryCode,
         match_count: 1,
-        min_similarity: 0.30,
+        min_similarity: 0.45,
       });
       if (error) {
         dbObs.update({ output: { error: error.message } });
@@ -607,20 +607,22 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode)
   const raw = (flow.tipo_respuesta ?? flow.flow_type ?? "informativa") + "";
   const tipo = raw.toLowerCase().trim().normalize("NFD").replace(/[̀-ͯ]/g, "");
 
-  // NIVEL 3: texto exacto si es relevante, respuesta empática si no lo es
+  // NIVEL 3: con similarity >= 0.50 devuelve textual + relevanceGuard;
+  // con similarity < 0.50 el LLM evalúa si realmente aplica antes de responder
   if (tipo === "seleccion") {
-    console.log(`📄 Flow NIVEL 3 (selección exacta): ${flow.flow_id}`);
+    const highConfidence = (flow.similarity ?? 0) >= 0.50;
+    console.log(`📄 Flow NIVEL 3 (selección): ${flow.flow_id} sim=${flow.similarity?.toFixed(3)} highConfidence=${highConfidence}`);
     return startActiveObservation("claude-flow-response", async (obs) => {
-      obs.update({ input: { question, tipo_respuesta: tipo, flow_id: flow.flow_id } });
+      obs.update({ input: { question, tipo_respuesta: tipo, flow_id: flow.flow_id, similarity: flow.similarity } });
+      const block2Text = highConfidence
+        ? `Organización: ${orgName}. País: ${countryCode}.\nEvalúa si la siguiente información responde la pregunta del usuario.\n- Si SÍ es relevante: devuelve EXACTAMENTE este texto, sin ninguna modificación:\n${flow.answer}\n- Si NO es relevante: responde empáticamente indicando que aún no cuentas con esa información específica y sugiere contactar directamente a ${orgName}.`
+        : `Organización: ${orgName}. País: ${countryCode}.\nSe encontró información relacionada pero con baja confianza. Evalúa con criterio estricto si realmente responde la pregunta del usuario.\n- Si SÍ aplica claramente: devuelve EXACTAMENTE este texto sin ninguna modificación:\n${flow.answer}\n- Si NO aplica o hay dudas: responde empáticamente que aún no cuentas con esa información específica y sugiere contactar directamente a ${orgName}.`;
       const msg = await anthropic.messages.create({
         model: CLAUDE_MODEL,
         max_tokens: 400,
         system: [
           { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-          {
-            type: "text",
-            text: `Organización: ${orgName}. País: ${countryCode}.\nEvalúa si la siguiente información responde la pregunta del usuario.\n- Si SÍ es relevante: devuelve EXACTAMENTE este texto, sin ninguna modificación:\n${flow.answer}\n- Si NO es relevante: responde empáticamente indicando que aún no cuentas con esa información específica y sugiere contactar directamente a ${orgName}.`,
-          },
+          { type: "text", text: block2Text },
         ],
         messages: [...history, { role: "user", content: question }],
       });
