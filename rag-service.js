@@ -595,6 +595,63 @@ Responde SOLO con el JSON. Ejemplo exacto: {"relevancia": 0.9, "fidelidad": 0.8,
   }
 }
 
+// ── 3 niveles de respuesta según tipo_respuesta ───────────────
+// NIVEL 1 "informativa" (o null): LLM reformula libremente con la info de BD
+// NIVEL 2 "paso a paso":          LLM adapta tono pero conserva TODOS los pasos y datos exactos
+// NIVEL 3 "seleccion":            Texto exacto de BD, sin ninguna modificación
+async function presentFlowWithLLM(flow, question, history, orgName, countryCode) {
+  const raw = (flow.tipo_respuesta ?? flow.flow_type ?? "informativa") + "";
+  const tipo = raw.toLowerCase().trim().normalize("NFD").replace(/[̀-ͯ]/g, "");
+
+  // NIVEL 3: devolver el texto tal cual, sin LLM
+  if (tipo === "seleccion") {
+    console.log(`📄 Flow NIVEL 3 (selección exacta): ${flow.flow_id}`);
+    return flow.answer;
+  }
+
+  const isNivel2 = tipo === "paso a paso" || tipo === "paso_a_paso";
+  console.log(`🤖 Flow NIVEL ${isNivel2 ? "2 (paso a paso)" : "1 (informativa)"}: ${flow.flow_id}`);
+
+  const nivel2Rules = isNivel2
+    ? "\nREGLAS ESTRICTAS (no negociables):\n- Incluye TODOS los pasos sin omitir ninguno\n- No cambies ningún dato concreto (direcciones, teléfonos, requisitos, nombres de instituciones, montos)\n- No agregues información que no esté en el texto original\n- Solo adapta el tono y la introducción para sonar más natural"
+    : "";
+
+  const userContent = `Información de la base de conocimiento:\n${flow.answer}\n\nPregunta del usuario: ${question}`;
+
+  return startActiveObservation("claude-flow-response", async (obs) => {
+    obs.update({ input: { question, tipo_respuesta: tipo, flow_id: flow.flow_id } });
+
+    const msg = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: isNivel2 ? 600 : 300,
+      system: [
+        { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+        {
+          type: "text",
+          text: `Organización activa: ${orgName}. País: ${countryCode}. Responde la pregunta usando la información de la base de conocimiento proporcionada. No inventes datos adicionales.${nivel2Rules}`,
+        },
+      ],
+      messages: [...history, { role: "user", content: userContent }],
+    });
+
+    const resp = msg.content[0]?.text || flow.answer;
+    const cacheRead = msg.usage.cache_read_input_tokens ?? 0;
+    if (cacheRead > 0) console.log(`💾 Cache hit Flow [${countryCode}]: ${cacheRead} tokens`);
+
+    obs.update({
+      output: resp,
+      model: CLAUDE_MODEL,
+      usageDetails: {
+        input: msg.usage.input_tokens,
+        output: msg.usage.output_tokens,
+        cache_read: cacheRead,
+        cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
+      },
+    });
+    return resp;
+  }, { asType: "generation" });
+}
+
 // ── Clarificación inteligente ─────────────────────────────────
 // Cuando el mensaje es vago, genera UNA pregunta empática y específica
 // basada en lo que escribió el usuario, considerando el historial previo.
@@ -696,15 +753,12 @@ async function askAI(userId, countryCode, question) {
           console.log(`📋 Flow: ${flow.flow_id} [${flow.flow_type}] sim: ${flow.similarity?.toFixed(3)}`);
           const normalizedType = flow.flow_type?.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 
-          if (normalizedType === "informativa") {
-            setCached(countryCode, question, flow.answer);
-            rootObs.update({ output: flow.answer, metadata: { search_type: "flow_informativa", flow_id: flow.flow_id } });
-            return { response: flow.answer, metadata: { search_type: "flow_informativa", flow_id: flow.flow_id, total_ms: Date.now() - totalStart } };
-          }
-
-          if (normalizedType === "seleccion") {
-            rootObs.update({ output: flow.answer, metadata: { search_type: "flow_seleccion", flow_id: flow.flow_id } });
-            return { response: flow.answer, metadata: { search_type: "flow_seleccion", flow_id: flow.flow_id, total_ms: Date.now() - totalStart } };
+          if (normalizedType === "informativa" || normalizedType === "seleccion") {
+            const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode);
+            const searchType = normalizedType === "informativa" ? "flow_informativa" : "flow_seleccion";
+            setCached(countryCode, question, response);
+            rootObs.update({ output: response, metadata: { search_type: searchType, flow_id: flow.flow_id, tipo_respuesta: flow.tipo_respuesta ?? normalizedType } });
+            return { response, metadata: { search_type: searchType, flow_id: flow.flow_id, total_ms: Date.now() - totalStart } };
           }
 
           if (normalizedType === "paso a paso" || normalizedType === "paso_a_paso") {
