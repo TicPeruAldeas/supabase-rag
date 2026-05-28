@@ -324,6 +324,10 @@ async function updateStep(stateId, currentStep, status = "active") {
 
 // ── Historial reciente ────────────────────────────────────────
 // limit = 10 → últimos 5 mensajes del usuario + sus 5 respuestas (5 pares completos)
+// Reset por inactividad: si el último mensaje tiene más de 24 h, se ignora
+// el historial anterior y se trata como conversación nueva (sin borrar BD).
+const HISTORY_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 horas
+
 async function getRecentHistory(userId, countryCode, limit = 10) {
   const { data, error } = await supabase
     .from("conversations")
@@ -334,8 +338,17 @@ async function getRecentHistory(userId, countryCode, limit = 10) {
     .order("created_at", { ascending: false })
     .limit(limit);
   if (error) throw error;
+  if (!data || data.length === 0) return [];
 
-  const messages = (data || []).reverse().map(item => ({ role: item.role, content: item.message }));
+  // data[0] es el mensaje más reciente (orden DESC).
+  // Si supera el tiempo de expiración, conversación nueva.
+  const lastTs = new Date(data[0].created_at).getTime();
+  if (Date.now() - lastTs > HISTORY_EXPIRY_MS) {
+    console.log(`⏰ Historial expirado para ${userId} [${countryCode}] — conversación nueva`);
+    return [];
+  }
+
+  const messages = data.reverse().map(item => ({ role: item.role, content: item.message }));
 
   // La API de Claude requiere que los mensajes alternen user/assistant.
   // Si por algún desfase el primer mensaje fuera del asistente, lo descartamos.
