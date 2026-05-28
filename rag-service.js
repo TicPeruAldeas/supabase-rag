@@ -226,6 +226,9 @@ PAUTAS DE RESPUESTA PARA ESTE ASISTENTE
 
 const SMALL_TALK_REGEX = /^(hola|buenos|buenas|hi|hey|gracias|ok|okay|sí|si|no|perfecto|genial|entendido|como estas|buen dia|buenas tardes|buenas noches|👍|😊)[\s!?.]*$/i;
 
+// Mensajes vagos que necesitan una pregunta de clarificación antes de buscar
+const VAGUE_REGEX = /^(necesito(\s+(ayuda|apoyo|orientaci[oó]n|informaci[oó]n))?|tengo(\s+un)?\s+(problema|duda|consulta|pregunta)|me\s+(pueden?|podr[ií]a[ns]?)\s*ayudar|b[úu]sco\s+(ayuda|apoyo|informaci[oó]n|orientaci[oó]n)|ayuda(\s+por\s+favor)?|ay[úu]dame|orientaci[oó]n|quiero\s+(informaci[oó]n|saber|ayuda))[.!,?]*\s*$/i;
+
 // ── Helper: genera embedding ──────────────────────────────────
 // OTel context propagation convierte este span en hijo del observation activo
 async function embedText(text) {
@@ -579,6 +582,41 @@ Responde SOLO con el JSON. Ejemplo exacto: {"relevancia": 0.9, "fidelidad": 0.8,
   }
 }
 
+// ── Clarificación inteligente ─────────────────────────────────
+// Cuando el mensaje es vago, genera UNA pregunta empática y específica
+// basada en lo que escribió el usuario, considerando el historial previo.
+async function generateClarification(question, history, orgName, countryCode) {
+  return startActiveObservation("claude-clarification", async (obs) => {
+    obs.update({ input: question });
+    const messages = [...history, { role: "user", content: question }];
+    const msg = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 120,
+      system: [
+        { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+        {
+          type: "text",
+          text: `Organización activa: ${orgName}. País: ${countryCode}. El usuario envió un mensaje vago o ambiguo. Formula UNA SOLA pregunta empática y específica para entender mejor qué necesita, considerando el historial de la conversación si lo hay. La pregunta debe ser breve, cálida y directamente relacionada con lo que escribió el usuario. No respondas a ningún tema concreto todavía — solo haz la pregunta de clarificación.`,
+        },
+      ],
+      messages,
+    });
+    const resp = msg.content[0]?.text
+      || `¿En qué área específica puedo orientarte sobre los servicios de ${orgName}?`;
+    obs.update({
+      output: resp,
+      model: CLAUDE_MODEL,
+      usageDetails: {
+        input: msg.usage.input_tokens,
+        output: msg.usage.output_tokens,
+        cache_read: msg.usage.cache_read_input_tokens ?? 0,
+        cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
+      },
+    });
+    return resp;
+  }, { asType: "generation" });
+}
+
 // ── Core RAG ──────────────────────────────────────────────────
 async function askAI(userId, countryCode, question) {
   const totalStart = Date.now();
@@ -627,6 +665,16 @@ async function askAI(userId, countryCode, question) {
           return { response: cached, metadata: { search_type: "cache", total_ms: Date.now() - totalStart } };
         }
 
+        // Historial disponible para todos los paths a partir de aquí
+        const history = await getRecentHistory(userId, countryCode, 10);
+
+        // 3.5 MENSAJE VAGO — pedir clarificación antes de buscar
+        if (VAGUE_REGEX.test(question.trim())) {
+          const response = await generateClarification(question, history, orgName, countryCode);
+          rootObs.update({ output: response, metadata: { search_type: "clarification" } });
+          return { response, metadata: { search_type: "clarification", total_ms: Date.now() - totalStart } };
+        }
+
         // 4. BUSCAR EN knowledge_flows (Excel)
         // searchFlow → embedText → supabase-match-flows: todos hijos automáticos
         const flow = await searchFlow(countryCode, question);
@@ -671,8 +719,8 @@ async function askAI(userId, countryCode, question) {
           hybridObs.update({ input: question });
 
           // searchSemantic y searchFast son hijos automáticos via OTel context
-          const [history, semanticData, fastData] = await Promise.all([
-            getRecentHistory(userId, countryCode, 10),
+          // history ya fue obtenido antes del paso 4 (scope externo)
+          const [semanticData, fastData] = await Promise.all([
             searchSemantic(countryCode, question, 5),
             searchFast(countryCode, question, 3),
           ]);
@@ -682,20 +730,21 @@ async function askAI(userId, countryCode, question) {
           if (allResults.length === 0) {
             hybridObs.update({ output: { count: 0 } });
 
-            // Sin contexto en la BD — Claude entiende la intención y responde con empatía
+            // Sin contexto en la BD — Claude usa el historial + conocimiento general
+            // de la organización para responder con empatía sin inventar datos
             const noCtxResponse = await startActiveObservation("claude-no-context", async (noCtxObs) => {
               noCtxObs.update({ input: question });
               const noCtxMsg = await anthropic.messages.create({
                 model: CLAUDE_MODEL,
-                max_tokens: 150,
+                max_tokens: 200,
                 system: [
                   { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
                   {
                     type: "text",
-                    text: `Organización activa: ${orgName}. País: ${countryCode}. No hay información disponible en la base de conocimiento para esta consulta. Entiende la intención del usuario, responde de forma cálida y empática reconociendo el tema que pregunta, indica que no tienes esa información específica, y recomiéndale contactar directamente a ${orgName}.`,
+                    text: `Organización activa: ${orgName}. País: ${countryCode}. No hay información específica disponible en la base de conocimiento para esta consulta. Usa el historial de la conversación (si lo hay) y tu conocimiento general sobre ${orgName} para responder de forma cálida y empática. Reconoce el tema que pregunta el usuario, indica honestamente que no cuentas con esa información específica en este momento, y recomiéndale contactar directamente a ${orgName}. Nunca inventes datos, nombres, montos ni procedimientos concretos.`,
                   },
                 ],
-                messages: [{ role: "user", content: question }],
+                messages: [...history, { role: "user", content: question }],
               });
               const resp = noCtxMsg.content[0]?.text
                 || `Lo siento, no tengo esa información en este momento. Te recomiendo contactar directamente a ${orgName} para que te orienten mejor.`;
