@@ -612,6 +612,8 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode)
   const isNivel2 = tipo === "paso a paso" || tipo === "paso_a_paso";
   console.log(`🤖 Flow NIVEL ${isNivel2 ? "2 (paso a paso)" : "1 (informativa)"}: ${flow.flow_id}`);
 
+  const relevanceGuard = `\nANTES DE RESPONDER: evalúa internamente si la información de la base de conocimiento realmente responde la pregunta del usuario. Si NO es relevante o no la cubre, responde empáticamente indicando que aún no cuentas con esa información específica y sugiere contactar directamente a ${orgName}. No fuerces una respuesta con información que no aplica.`;
+
   const block2 = isNivel2
     ? `Organización: ${orgName}. País: ${countryCode}.
 Eres un asistente empático que apoya a migrantes y familias vulnerables. Presenta la información de forma conversacional y natural, como un amigo que guía paso a paso. NO uses formato "Paso X de Y", en su lugar integra los pasos fluidamente en la conversación.
@@ -621,10 +623,10 @@ REGLAS ESTRICTAS (no negociables):
 - No cambies ningún dato concreto (direcciones, teléfonos, requisitos, nombres de instituciones)
 - No agregues información que no esté en el texto original
 - Tono empático, cálido y cercano
-- Al final de cada paso pregunta naturalmente si quiere continuar, necesita más detalle o tiene dudas, sin lenguaje robótico`
+- Al final de cada paso pregunta naturalmente si quiere continuar, necesita más detalle o tiene dudas, sin lenguaje robótico${relevanceGuard}`
     : `Organización: ${orgName}. País: ${countryCode}.
 Eres un asistente empático que apoya a migrantes y familias vulnerables. Usa la información de la base de conocimiento como guía, pero responde de forma natural y adaptada exactamente a lo que preguntó el usuario. Tono cálido, humano y cercano.
-No inventes datos adicionales.`;
+No inventes datos adicionales.${relevanceGuard}`;
 
   const userContent = `Información de la base de conocimiento:\n${flow.answer}\n\nPregunta del usuario: ${question}`;
 
