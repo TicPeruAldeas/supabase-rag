@@ -522,7 +522,8 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
 }
 
 // ── LLM-as-a-Judge ────────────────────────────────────────────
-// Criterios: relevancia, fidelidad, utilidad (cada uno entre 0.0 y 1.0)
+// Criterios centrados en si el USUARIO quedó bien atendido,
+// no en si el flow de BD fue un match perfecto.
 // traceId capturado del rootObs mientras el trace estaba activo.
 // Se llama fire-and-forget — no bloquea el envío del mensaje a WhatsApp.
 async function evaluateResponse(traceId, question, context, response) {
@@ -533,12 +534,12 @@ async function evaluateResponse(traceId, question, context, response) {
   try {
     const msg = await anthropic.messages.create({
       model: EVAL_MODEL,
-      max_tokens: 80,
-      system: "Eres un evaluador de calidad de respuestas de chatbots. Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional ni explicaciones.",
+      max_tokens: 100,
+      system: "Eres un evaluador de calidad de atención a usuarios vulnerables (migrantes y familias). Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional ni explicaciones.",
       messages: [
         {
           role: "user",
-          content: `Evalúa la respuesta del asistente con un score de 0.0 a 1.0 en cada criterio.
+          content: `Evalúa la atención recibida por el usuario con un score de 0.0 a 1.0 en cada criterio.
 
 PREGUNTA DEL USUARIO:
 ${question}
@@ -550,11 +551,12 @@ RESPUESTA DEL ASISTENTE:
 ${response}
 
 CRITERIOS DE EVALUACIÓN:
-- relevancia: ¿La respuesta aborda directamente la pregunta? (0.0 = completamente irrelevante, 1.0 = perfectamente relevante)
-- fidelidad: ¿La respuesta se basa solo en el contexto sin inventar datos? (0.0 = inventa datos, 1.0 = completamente fiel al contexto)
-- utilidad: ¿La respuesta resuelve la necesidad del usuario de forma clara? (0.0 = inútil, 1.0 = muy útil)
+- fidelidad: ¿La respuesta es coherente y no contradice la información de la base de conocimiento? (0.0 = contradice o inventa datos, 1.0 = completamente coherente)
+- relevancia: ¿La respuesta realmente ayuda al usuario con lo que preguntó, independientemente del flow que matcheó? (0.0 = no ayuda en nada, 1.0 = responde exactamente lo que necesitaba)
+- utilidad: ¿El usuario obtiene valor real de esta respuesta para su situación como migrante o familia vulnerable? (0.0 = sin valor práctico, 1.0 = muy útil para su situación)
+- precision_contexto: ¿El contexto encontrado en BD fue útil para generar la respuesta, aunque no sea una coincidencia exacta con la pregunta? (0.0 = contexto inútil o confuso, 1.0 = contexto muy útil)
 
-Responde SOLO con el JSON. Ejemplo exacto: {"relevancia": 0.9, "fidelidad": 0.8, "utilidad": 0.7}`,
+Responde SOLO con el JSON. Ejemplo exacto: {"fidelidad": 0.9, "relevancia": 0.8, "utilidad": 0.7, "precision_contexto": 0.6}`,
         },
       ],
     });
@@ -567,7 +569,7 @@ Responde SOLO con el JSON. Ejemplo exacto: {"relevancia": 0.9, "fidelidad": 0.8,
     }
 
     const scores = JSON.parse(match[0]);
-    const criteria = ["relevancia", "fidelidad", "utilidad"];
+    const criteria = ["fidelidad", "relevancia", "utilidad", "precision_contexto"];
 
     for (const name of criteria) {
       const rawValue = scores[name];
@@ -585,10 +587,11 @@ Responde SOLO con el JSON. Ejemplo exacto: {"relevancia": 0.9, "fidelidad": 0.8,
       });
     }
 
-    const r = scores.relevancia?.toFixed(2) ?? "?";
     const f = scores.fidelidad?.toFixed(2) ?? "?";
+    const r = scores.relevancia?.toFixed(2) ?? "?";
     const u = scores.utilidad?.toFixed(2) ?? "?";
-    console.log(`🧑‍⚖️ LLM-Judge: relevancia=${r} fidelidad=${f} utilidad=${u}`);
+    const p = scores.precision_contexto?.toFixed(2) ?? "?";
+    console.log(`🧑‍⚖️ LLM-Judge: fidelidad=${f} relevancia=${r} utilidad=${u} precision_contexto=${p}`);
 
     await langfuseClient.score.flush();
   } catch (err) {
