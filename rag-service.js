@@ -612,9 +612,19 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode)
   const isNivel2 = tipo === "paso a paso" || tipo === "paso_a_paso";
   console.log(`🤖 Flow NIVEL ${isNivel2 ? "2 (paso a paso)" : "1 (informativa)"}: ${flow.flow_id}`);
 
-  const nivel2Rules = isNivel2
-    ? "\nREGLAS ESTRICTAS (no negociables):\n- Incluye TODOS los pasos sin omitir ninguno\n- No cambies ningún dato concreto (direcciones, teléfonos, requisitos, nombres de instituciones, montos)\n- No agregues información que no esté en el texto original\n- Solo adapta el tono y la introducción para sonar más natural"
-    : "";
+  const block2 = isNivel2
+    ? `Organización: ${orgName}. País: ${countryCode}.
+Eres un asistente empático que apoya a migrantes y familias vulnerables. Presenta la información de forma conversacional y natural, como un amigo que guía paso a paso. NO uses formato "Paso X de Y", en su lugar integra los pasos fluidamente en la conversación.
+Presenta UN solo paso a la vez y espera confirmación antes de continuar.
+REGLAS ESTRICTAS (no negociables):
+- Incluye TODOS los pasos sin omitir ninguno
+- No cambies ningún dato concreto (direcciones, teléfonos, requisitos, nombres de instituciones)
+- No agregues información que no esté en el texto original
+- Tono empático, cálido y cercano
+- Al final de cada paso pregunta naturalmente si quiere continuar, necesita más detalle o tiene dudas, sin lenguaje robótico`
+    : `Organización: ${orgName}. País: ${countryCode}.
+Eres un asistente empático que apoya a migrantes y familias vulnerables. Usa la información de la base de conocimiento como guía, pero responde de forma natural y adaptada exactamente a lo que preguntó el usuario. Tono cálido, humano y cercano.
+No inventes datos adicionales.`;
 
   const userContent = `Información de la base de conocimiento:\n${flow.answer}\n\nPregunta del usuario: ${question}`;
 
@@ -626,10 +636,7 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode)
       max_tokens: isNivel2 ? 600 : 300,
       system: [
         { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-        {
-          type: "text",
-          text: `Organización activa: ${orgName}. País: ${countryCode}. Responde la pregunta usando la información de la base de conocimiento proporcionada. No inventes datos adicionales.${nivel2Rules}`,
-        },
+        { type: "text", text: block2 },
       ],
       messages: [...history, { role: "user", content: userContent }],
     });
