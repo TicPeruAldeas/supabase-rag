@@ -469,12 +469,66 @@ function mergeResults(semanticResults, fastResults) {
   return merged.slice(0, 6);
 }
 
+// ── Presentar un paso individual con LLM ─────────────────────
+// Reemplaza los strings hardcodeados de handlePasoAPaso con tono conversacional
+async function presentStepWithLLM(stepContent, { isDetail, isLastStep, question, history, orgName, countryCode }) {
+  return startActiveObservation("claude-step-response", async (obs) => {
+    obs.update({ input: { isDetail, isLastStep } });
+
+    const endInstruction = isLastStep
+      ? "Este es el último punto. Al final pregunta de forma natural si necesita más detalle o ya tiene todo claro."
+      : "Al final pregunta de forma natural si quiere más detalle, continuar con lo siguiente, o tiene alguna duda.";
+
+    const task = isDetail
+      ? `Explica el siguiente detalle de forma empática y clara:\n${stepContent}`
+      : `Presenta el siguiente contenido de forma conversacional:\n${stepContent}`;
+
+    const msg = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 250,
+      system: [
+        { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+        {
+          type: "text",
+          text: `Organización: ${orgName}. País: ${countryCode}.
+Eres un asistente empático que apoya a migrantes y familias vulnerables. Presenta la información de forma conversacional y natural, como un amigo que orienta. NO uses el formato "Paso X de Y" ni numeraciones. Integra el contenido fluidamente en la conversación.
+REGLAS:
+- No cambies ningún dato concreto (direcciones, teléfonos, requisitos, nombres de instituciones)
+- No agregues información que no esté en el texto
+- Tono empático, cálido y cercano
+- ${endInstruction}`,
+        },
+      ],
+      messages: [...history, { role: "user", content: task }],
+    });
+
+    const resp = msg.content[0]?.text || stepContent;
+    obs.update({
+      output: resp,
+      model: CLAUDE_MODEL,
+      usageDetails: {
+        input: msg.usage.input_tokens,
+        output: msg.usage.output_tokens,
+        cache_read: msg.usage.cache_read_input_tokens ?? 0,
+        cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
+      },
+    });
+    return resp;
+  }, { asType: "generation" });
+}
+
 // ── Manejar PASO A PASO ───────────────────────────────────────
-// detectIntent queda como hijo automático via OTel context
 async function handlePasoAPaso(userId, countryCode, question, state) {
+  const orgName = COUNTRY_ORGS[countryCode] || `Aldeas Infantiles SOS (${countryCode})`;
+
   return startActiveObservation("handle-paso-a-paso", async (obs) => {
     obs.update({ input: { step: state.current_step, total: state.total_steps, flow_id: state.flow_id } });
-    const intent = await detectIntent(question);
+
+    // detectIntent y getRecentHistory en paralelo — ambos independientes
+    const [intent, history] = await Promise.all([
+      detectIntent(question),
+      getRecentHistory(userId, countryCode, 10),
+    ]);
     console.log(`🎯 Intent: ${intent} (paso ${state.current_step}/${state.total_steps})`);
 
     let result;
@@ -495,12 +549,14 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
         .eq("step_number", state.current_step)
         .single();
 
-      result = stepData
-        ? {
-            response: `Detalle del paso ${state.current_step}:\n\n${stepData.step_detail}\n\n¿Quieres continuar con el paso ${state.current_step + 1 <= state.total_steps ? state.current_step + 1 : "siguiente"}?`,
-            metadata: { flow_type: "paso_a_paso" },
-          }
-        : { response: "No tengo más detalle sobre este paso. ¿Quieres continuar con el siguiente?", metadata: { flow_type: "paso_a_paso" } };
+      if (stepData) {
+        const response = await presentStepWithLLM(stepData.step_detail, {
+          isDetail: true, isLastStep: false, question, history, orgName, countryCode,
+        });
+        result = { response, metadata: { flow_type: "paso_a_paso" } };
+      } else {
+        result = { response: "No tengo más detalle sobre este paso. ¿Quieres continuar con el siguiente?", metadata: { flow_type: "paso_a_paso" } };
+      }
 
     } else {
       // siguiente
@@ -522,8 +578,11 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
         } else {
           await updateStep(state.id, nextStep);
           const isLastStep = nextStep >= state.total_steps;
+          const response = await presentStepWithLLM(nextStepData.step_summary, {
+            isDetail: false, isLastStep, question, history, orgName, countryCode,
+          });
           result = {
-            response: `Paso ${nextStep} de ${state.total_steps}:\n\n${nextStepData.step_summary}\n\n${isLastStep ? "Este es el último paso. ¿Quieres más detalle o ya tienes todo claro?" : `¿Quieres más detalle, continuar al paso ${nextStep + 1}, o ya tienes todo claro?`}`,
+            response,
             metadata: { flow_type: "paso_a_paso", step: nextStep },
           };
         }
