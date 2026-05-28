@@ -260,41 +260,6 @@ async function embedText(text) {
   }, { asType: "embedding" });
 }
 
-// ── Detectar intención (flujo paso a paso) ────────────────────
-async function detectIntent(userMessage) {
-  return startActiveObservation("claude-detect-intent", async (obs) => {
-    obs.update({ input: userMessage });
-    const msg = await anthropic.messages.create({
-      model: CLAUDE_MODEL,
-      max_tokens: 16,
-      system: [
-        {
-          type: "text",
-          text: `Clasifica el mensaje en una de estas intenciones:
-- "mas_detalle": quiere más información sobre lo explicado
-- "siguiente": quiere continuar al siguiente paso
-- "terminar": agradece, entendió, se despide
-- "otro": pregunta algo completamente diferente
-Responde SOLO con una palabra: mas_detalle, siguiente, terminar, otro`,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      messages: [{ role: "user", content: userMessage }],
-    });
-    const intent = msg.content[0].text.trim().toLowerCase();
-    obs.update({
-      output: intent,
-      model: CLAUDE_MODEL,
-      usageDetails: {
-        input: msg.usage.input_tokens,
-        output: msg.usage.output_tokens,
-        cache_read: msg.usage.cache_read_input_tokens ?? 0,
-        cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
-      },
-    });
-    return intent;
-  }, { asType: "generation" });
-}
 
 // ── Estado conversacional ─────────────────────────────────────
 async function getActiveState(userId, countryCode) {
@@ -518,79 +483,113 @@ REGLAS:
 }
 
 // ── Manejar PASO A PASO ───────────────────────────────────────
+// La IA conoce TODOS los pasos del proceso, entiende la respuesta natural
+// del usuario y decide qué presentar sin clasificadores rígidos.
 async function handlePasoAPaso(userId, countryCode, question, state) {
   const orgName = COUNTRY_ORGS[countryCode] || `Aldeas Infantiles SOS (${countryCode})`;
 
   return startActiveObservation("handle-paso-a-paso", async (obs) => {
     obs.update({ input: { step: state.current_step, total: state.total_steps, flow_id: state.flow_id } });
 
-    // detectIntent y getRecentHistory en paralelo — ambos independientes
-    const [intent, history] = await Promise.all([
-      detectIntent(question),
+    // Historial y pasos en paralelo
+    const [history, stepsResult] = await Promise.all([
       getRecentHistory(userId, countryCode, 10),
-    ]);
-    console.log(`🎯 Intent: ${intent} (paso ${state.current_step}/${state.total_steps})`);
-
-    let result;
-
-    if (intent === "terminar") {
-      await updateStep(state.id, state.current_step, "completed");
-      result = { response: "¡Entendido! Si necesitas más ayuda, con gusto te orientamos.", metadata: { flow_type: "paso_a_paso" } };
-
-    } else if (intent === "otro") {
-      await updateStep(state.id, state.current_step, "cancelled");
-      result = null;
-
-    } else if (intent === "mas_detalle") {
-      const { data: stepData } = await supabase
+      supabase
         .from("knowledge_steps")
-        .select("step_detail, step_number")
+        .select("step_number, step_summary, step_detail")
         .eq("flow_id", state.flow_id)
-        .eq("step_number", state.current_step)
-        .single();
+        .order("step_number", { ascending: true }),
+    ]);
 
-      if (stepData) {
-        const response = await presentStepWithLLM(stepData.step_detail, {
-          isDetail: true, isLastStep: false, question, history, orgName, countryCode,
-        });
-        result = { response, metadata: { flow_type: "paso_a_paso" } };
-      } else {
-        result = { response: "No tengo más detalle sobre este paso. ¿Quieres continuar con el siguiente?", metadata: { flow_type: "paso_a_paso" } };
-      }
+    const allSteps = stepsResult.data || [];
+    const currentStep = allSteps.find(s => s.step_number === state.current_step);
+    const nextStep = allSteps.find(s => s.step_number === state.current_step + 1);
+    const isLastStep = state.current_step >= state.total_steps;
 
-    } else {
-      // siguiente
-      const nextStep = state.current_step + 1;
-      if (nextStep > state.total_steps) {
-        await updateStep(state.id, state.current_step, "completed");
-        result = { response: "✅ Hemos terminado todos los pasos. ¿Hay algo más en lo que pueda ayudarte?", metadata: { flow_type: "paso_a_paso" } };
-      } else {
-        const { data: nextStepData } = await supabase
-          .from("knowledge_steps")
-          .select("step_summary, step_number")
-          .eq("flow_id", state.flow_id)
-          .eq("step_number", nextStep)
-          .single();
-
-        if (!nextStepData) {
-          await updateStep(state.id, state.current_step, "completed");
-          result = { response: "✅ Eso es todo. ¿Necesitas ayuda con algo más?", metadata: { flow_type: "paso_a_paso" } };
-        } else {
-          await updateStep(state.id, nextStep);
-          const isLastStep = nextStep >= state.total_steps;
-          const response = await presentStepWithLLM(nextStepData.step_summary, {
-            isDetail: false, isLastStep, question, history, orgName, countryCode,
-          });
-          result = {
-            response,
-            metadata: { flow_type: "paso_a_paso", step: nextStep },
-          };
-        }
-      }
+    if (!currentStep) {
+      await updateStep(state.id, state.current_step, "completed");
+      return { response: "¡Entendido! Si necesitas más ayuda, con gusto te orientamos.", metadata: { flow_type: "paso_a_paso" } };
     }
 
-    obs.update({ output: result?.response ?? null });
-    return result;
+    const stepsContext = allSteps.map(s => `[${s.step_number}] ${s.step_summary}`).join("\n");
+
+    const systemContext = `Organización: ${orgName}. País: ${countryCode}.
+Estás orientando al usuario en un proceso de ${state.total_steps} puntos. Va en el punto ${state.current_step}.
+
+TODOS LOS PUNTOS DEL PROCESO:
+${stepsContext}
+
+PUNTO ACTUAL (${state.current_step}):
+${currentStep.step_detail || currentStep.step_summary}
+
+${nextStep ? `SIGUIENTE PUNTO:\n${nextStep.step_summary}` : "ESTE ES EL ÚLTIMO PUNTO."}
+
+Comprende la respuesta del usuario de forma natural y actúa:
+- Si quiere continuar o entendió: presenta el siguiente punto conversacionalmente
+- Si tiene dudas o pide más detalle: explica el punto actual con más detalle
+- Si ya terminó o se despide: cierra con calidez
+- Si pregunta algo completamente diferente: cierra este flujo para atender ese tema
+
+Responde ÚNICAMENTE con JSON válido (sin texto adicional fuera del JSON):
+{"accion": "siguiente|detalle|finalizar|otro", "respuesta": "tu respuesta conversacional aquí"}
+
+REGLAS para la respuesta:
+- NO uses "Paso X de Y" ni numeraciones
+- Tono empático, cálido, como un amigo que orienta
+- No cambies datos concretos (direcciones, teléfonos, requisitos, nombres de instituciones)
+- No inventes información adicional`;
+
+    const msg = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 350,
+      system: [
+        { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+        { type: "text", text: systemContext },
+      ],
+      messages: [...history, { role: "user", content: question }],
+    });
+
+    const raw = (msg.content[0]?.text ?? "").trim();
+    let accion = "detalle";
+    let respuesta = raw;
+
+    try {
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        accion = (parsed.accion ?? "detalle").toLowerCase().trim();
+        respuesta = parsed.respuesta ?? raw;
+      }
+    } catch {
+      // JSON parse fallido — mantener respuesta raw sin avanzar
+    }
+
+    console.log(`🎯 Acción paso-a-paso: ${accion} (${state.current_step}/${state.total_steps})`);
+
+    obs.update({
+      output: respuesta,
+      model: CLAUDE_MODEL,
+      usageDetails: {
+        input: msg.usage.input_tokens,
+        output: msg.usage.output_tokens,
+        cache_read: msg.usage.cache_read_input_tokens ?? 0,
+        cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
+      },
+    });
+
+    if (accion === "siguiente") {
+      isLastStep
+        ? await updateStep(state.id, state.current_step, "completed")
+        : await updateStep(state.id, state.current_step + 1);
+    } else if (accion === "finalizar") {
+      await updateStep(state.id, state.current_step, "completed");
+    } else if (accion === "otro") {
+      await updateStep(state.id, state.current_step, "cancelled");
+      return null;
+    }
+    // "detalle": sin cambio de estado
+
+    return { response: respuesta, metadata: { flow_type: "paso_a_paso", step: state.current_step } };
   });
 }
 
@@ -672,13 +671,54 @@ Responde SOLO con el JSON. Ejemplo exacto: {"fidelidad": 0.9, "relevancia": 0.8,
   }
 }
 
+// ── Parsear pasos numerados desde texto libre ─────────────────
+function parseStepsFromText(text) {
+  const lines = (text || "").split("\n").map(l => l.trim()).filter(Boolean);
+  const steps = [];
+  let current = null;
+  for (const line of lines) {
+    const m = line.match(/^(\d+)[.)]\s+(.+)/);
+    if (m) {
+      if (current) steps.push(current);
+      current = { number: parseInt(m[1]), summary: m[2] };
+    } else if (current) {
+      current.summary += " " + line;
+    }
+  }
+  if (current) steps.push(current);
+  return steps;
+}
+
 // ── 3 niveles de respuesta según tipo_respuesta ───────────────
 // NIVEL 1 "informativa" (o null): LLM reformula libremente con la info de BD
 // NIVEL 2 "paso a paso":          LLM adapta tono pero conserva TODOS los pasos y datos exactos
 // NIVEL 3 "seleccion":            Texto exacto de BD, sin ninguna modificación
-async function presentFlowWithLLM(flow, question, history, orgName, countryCode) {
+async function presentFlowWithLLM(flow, question, history, orgName, countryCode, userId) {
   const raw = (flow.tipo_respuesta ?? flow.flow_type ?? "informativa") + "";
   const tipo = raw.toLowerCase().trim().normalize("NFD").replace(/[̀-ͯ]/g, "");
+
+  // NIVEL 2: inicia navegación guiada — muestra UN paso a la vez
+  const isNivel2 = tipo === "paso a paso" || tipo === "paso_a_paso";
+  if (isNivel2 && userId) {
+    const { data: kSteps } = await supabase
+      .from("knowledge_steps")
+      .select("step_number, step_summary")
+      .eq("flow_id", flow.flow_id)
+      .order("step_number", { ascending: true });
+
+    const steps = (kSteps && kSteps.length > 0)
+      ? kSteps.map(s => ({ number: s.step_number, summary: s.step_summary }))
+      : parseStepsFromText(flow.answer);
+
+    if (steps.length > 0) {
+      console.log(`🪜 Flow NIVEL 2 (paso a paso guiado): ${flow.flow_id} — ${steps.length} pasos`);
+      await upsertState(userId, countryCode, flow.flow_id, "paso a paso", 1, steps.length);
+      return presentStepWithLLM(steps[0].summary, {
+        isDetail: false, isLastStep: steps.length === 1,
+        question, history, orgName, countryCode,
+      });
+    }
+  }
 
   // NIVEL 3: con similarity >= 0.50 devuelve textual + relevanceGuard;
   // con similarity < 0.50 el LLM evalúa si realmente aplica antes de responder
@@ -714,22 +754,11 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode)
     }, { asType: "generation" });
   }
 
-  const isNivel2 = tipo === "paso a paso" || tipo === "paso_a_paso";
-  console.log(`🤖 Flow NIVEL ${isNivel2 ? "2 (paso a paso)" : "1 (informativa)"}: ${flow.flow_id}`);
+  console.log(`🤖 Flow NIVEL 1 (informativa): ${flow.flow_id}`);
 
   const relevanceGuard = `\nANTES DE RESPONDER: evalúa internamente si la información de la base de conocimiento realmente responde la pregunta del usuario. Si NO es relevante o no la cubre, responde empáticamente indicando que aún no cuentas con esa información específica y sugiere contactar directamente a ${orgName}. No fuerces una respuesta con información que no aplica.`;
 
-  const block2 = isNivel2
-    ? `Organización: ${orgName}. País: ${countryCode}.
-Eres un asistente empático que apoya a migrantes y familias vulnerables. Presenta la información de forma conversacional y natural, como un amigo que guía paso a paso. NO uses formato "Paso X de Y", en su lugar integra los pasos fluidamente en la conversación.
-Presenta UN solo paso a la vez y espera confirmación antes de continuar.
-REGLAS ESTRICTAS (no negociables):
-- Incluye TODOS los pasos sin omitir ninguno
-- No cambies ningún dato concreto (direcciones, teléfonos, requisitos, nombres de instituciones)
-- No agregues información que no esté en el texto original
-- Tono empático, cálido y cercano
-- Al final de cada paso pregunta naturalmente si quiere continuar, necesita más detalle o tiene dudas, sin lenguaje robótico${relevanceGuard}`
-    : `Organización: ${orgName}. País: ${countryCode}.
+  const block2 = `Organización: ${orgName}. País: ${countryCode}.
 Eres un asistente empático que apoya a migrantes y familias vulnerables. Usa la información de la base de conocimiento como guía, pero responde de forma natural y adaptada exactamente a lo que preguntó el usuario. Tono cálido, humano y cercano.
 No inventes datos adicionales.${relevanceGuard}`;
 
@@ -740,7 +769,7 @@ No inventes datos adicionales.${relevanceGuard}`;
 
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
-      max_tokens: isNivel2 ? 600 : 300,
+      max_tokens: 300,
       system: [
         { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
         { type: "text", text: block2 },
@@ -868,7 +897,7 @@ async function askAI(userId, countryCode, question) {
           const normalizedType = flow.flow_type?.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 
           if (normalizedType === "informativa" || normalizedType === "seleccion") {
-            const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode);
+            const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode, userId);
             const searchType = normalizedType === "informativa" ? "flow_informativa" : "flow_seleccion";
             setCached(countryCode, question, response);
             rootObs.update({ output: response, metadata: { search_type: searchType, flow_id: flow.flow_id, tipo_respuesta: flow.tipo_respuesta ?? normalizedType } });
@@ -888,7 +917,10 @@ async function askAI(userId, countryCode, question) {
             }
 
             await upsertState(userId, countryCode, flow.flow_id, "paso a paso", 1, steps.length);
-            const response = `Voy a guiarte paso a paso (${steps.length} pasos en total).\n\nPaso 1 de ${steps.length}:\n\n${steps[0].step_summary}\n\n¿Quieres más detalle sobre este paso, continuar al paso 2, o ya tienes todo claro?`;
+            const response = await presentStepWithLLM(steps[0].step_summary, {
+              isDetail: false, isLastStep: steps.length === 1,
+              question, history, orgName, countryCode,
+            });
             rootObs.update({ output: response, metadata: { search_type: "flow_paso_a_paso", flow_id: flow.flow_id } });
             return { response, metadata: { search_type: "flow_paso_a_paso", flow_id: flow.flow_id, total_steps: steps.length } };
           }
