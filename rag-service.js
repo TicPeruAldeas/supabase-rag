@@ -225,7 +225,7 @@ PAUTAS DE RESPUESTA PARA ESTE ASISTENTE
 8. Si detectas una situación de urgencia o riesgo para un niño, indica claramente que debe contactar con las autoridades locales de protección infantil y con la sede de la organización de forma inmediata.
 9. USO DEL HISTORIAL DE CONVERSACIÓN: El historial previo sirve ÚNICAMENTE para recordar datos personales que el usuario ya compartió (nombre, ciudad, situación familiar) y mantener coherencia en el trato. Cada nueva pregunta del usuario debe evaluarse de forma independiente. El historial NO determina el tema de la nueva pregunta ni debe hacer que interpretes la nueva consulta como continuación del tema anterior.`;
 
-const SMALL_TALK_REGEX = /^(hola|buenos|buenas|hi|hey|gracias|ok|okay|sí|si|no|perfecto|genial|entendido|como estas|buen dia|buenas tardes|buenas noches|👍|😊)[\s!?.]*$/i;
+const SMALL_TALK_REGEX = /^(hola+s?|buenos\s+(d[ií]as|tardes|noches)|buenas?(\s+(d[ií]as|tardes|noches))?|buen\s+d[ií]a|hi+|hey+|gracias+|ok|okay|sí|si|no|perfecto|genial|entendido|c[oó]mo\s+est[aá]s?|👍|😊)[\s!?,.:]*$/i;
 
 // Mensajes vagos que necesitan una pregunta de clarificación antes de buscar
 const VAGUE_REGEX = /^(necesito(\s+(ayuda|apoyo|orientaci[oó]n|informaci[oó]n))?|tengo(\s+un)?\s+(problema|duda|consulta|pregunta)|me\s+(pueden?|podr[ií]a[ns]?)\s*ayudar|b[úu]sco\s+(ayuda|apoyo|informaci[oó]n|orientaci[oó]n)|ayuda(\s+por\s+favor)?|ay[úu]dame|orientaci[oó]n|quiero\s+(informaci[oó]n|saber|ayuda))[.!,?]*\s*$/i;
@@ -604,10 +604,36 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode)
   const raw = (flow.tipo_respuesta ?? flow.flow_type ?? "informativa") + "";
   const tipo = raw.toLowerCase().trim().normalize("NFD").replace(/[̀-ͯ]/g, "");
 
-  // NIVEL 3: devolver el texto tal cual, sin LLM
+  // NIVEL 3: texto exacto si es relevante, respuesta empática si no lo es
   if (tipo === "seleccion") {
     console.log(`📄 Flow NIVEL 3 (selección exacta): ${flow.flow_id}`);
-    return flow.answer;
+    return startActiveObservation("claude-flow-response", async (obs) => {
+      obs.update({ input: { question, tipo_respuesta: tipo, flow_id: flow.flow_id } });
+      const msg = await anthropic.messages.create({
+        model: CLAUDE_MODEL,
+        max_tokens: 400,
+        system: [
+          { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+          {
+            type: "text",
+            text: `Organización: ${orgName}. País: ${countryCode}.\nEvalúa si la siguiente información responde la pregunta del usuario.\n- Si SÍ es relevante: devuelve EXACTAMENTE este texto, sin ninguna modificación:\n${flow.answer}\n- Si NO es relevante: responde empáticamente indicando que aún no cuentas con esa información específica y sugiere contactar directamente a ${orgName}.`,
+          },
+        ],
+        messages: [...history, { role: "user", content: question }],
+      });
+      const resp = msg.content[0]?.text || flow.answer;
+      obs.update({
+        output: resp,
+        model: CLAUDE_MODEL,
+        usageDetails: {
+          input: msg.usage.input_tokens,
+          output: msg.usage.output_tokens,
+          cache_read: msg.usage.cache_read_input_tokens ?? 0,
+          cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
+        },
+      });
+      return resp;
+    }, { asType: "generation" });
   }
 
   const isNivel2 = tipo === "paso a paso" || tipo === "paso_a_paso";
