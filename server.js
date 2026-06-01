@@ -251,9 +251,10 @@ app.post("/ingest-row", async (req, res) => {
     const { error: chunkError } = await supabase.from('knowledge_chunks').upsert({
       flow_id: ID,
       country_code: country_code || 'PE',
+      source_name: ID,
       chunk_text: chunkContent,
       embedding: embedding,
-      source_name: ID,
+      metadata: { categoria: Categoria, subtema: Subtema, tipo: Tipo },
     }, { onConflict: 'flow_id' });
     if (chunkError) throw new Error(chunkError.message);
     console.log('Chunk guardado: ' + ID);
