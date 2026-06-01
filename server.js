@@ -251,7 +251,7 @@ app.post("/ingest-row", async (req, res) => {
     const { error: chunkError } = await supabase.from('knowledge_chunks').upsert({
       flow_id: ID,
       country_code: country_code || 'PE',
-      content: chunkContent,
+      chunk_text: chunkContent,
       embedding: embedding,
       source_name: ID,
     }, { onConflict: 'flow_id' });
