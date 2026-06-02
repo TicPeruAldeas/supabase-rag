@@ -511,33 +511,33 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
       return { response: "¡Entendido! Si necesitas más ayuda, con gusto te orientamos.", metadata: { flow_type: "paso_a_paso" } };
     }
 
-    const stepsContext = allSteps.map(s => `[${s.step_number}] ${s.step_summary}`).join("\n");
+    const stepsContext = allSteps
+      .map(s => `Paso ${s.step_number}: ${s.step_detail || s.step_summary}`)
+      .join("\n\n");
 
     const systemContext = `Organización: ${orgName}. País: ${countryCode}.
-Estás orientando al usuario en un proceso de ${state.total_steps} puntos. Va en el punto ${state.current_step}.
+Estás guiando al usuario paso a paso. Va en el paso ${state.current_step} de ${state.total_steps}.
 
-TODOS LOS PUNTOS DEL PROCESO:
+CONTENIDO COMPLETO DEL PROCESO (fuente: Excel):
 ${stepsContext}
 
-PUNTO ACTUAL (${state.current_step}):
+PASO ACTUAL QUE DEBES MOSTRAR (${state.current_step}):
 ${currentStep.step_detail || currentStep.step_summary}
 
-${nextStep ? `SIGUIENTE PUNTO:\n${nextStep.step_summary}` : "ESTE ES EL ÚLTIMO PUNTO."}
+Usa el historial de la conversación para entender qué preguntó el usuario, qué ya se respondió y en qué paso va. Luego actúa:
+- Si confirma que entendió o quiere continuar → accion: "siguiente", presenta el PASO ${state.current_step + 1} con su texto exacto del Excel
+- Si tiene dudas o pide más detalle → accion: "detalle", explica el paso actual usando SOLO el texto del Excel
+- Si se despide o ya terminó → accion: "finalizar"
+- Si pregunta algo diferente → accion: "otro"
 
-Comprende la respuesta del usuario de forma natural y actúa:
-- Si quiere continuar o entendió: presenta el siguiente punto conversacionalmente
-- Si tiene dudas o pide más detalle: explica el punto actual con más detalle
-- Si ya terminó o se despide: cierra con calidez
-- Si pregunta algo completamente diferente: cierra este flujo para atender ese tema
+Responde ÚNICAMENTE con JSON válido:
+{"accion": "siguiente|detalle|finalizar|otro", "respuesta": "..."}
 
-Responde ÚNICAMENTE con JSON válido (sin texto adicional fuera del JSON):
-{"accion": "siguiente|detalle|finalizar|otro", "respuesta": "tu respuesta conversacional aquí"}
-
-REGLAS para la respuesta:
-- NO uses "Paso X de Y" ni numeraciones
-- Tono empático, cálido, como un amigo que orienta
-- No cambies datos concretos (direcciones, teléfonos, requisitos, nombres de instituciones)
-- No inventes información adicional`;
+REGLAS ESTRICTAS para el campo "respuesta":
+- El contenido debe venir 100% del texto del Excel. No inventes, no agregues ejemplos ni contexto adicional
+- Formato para avanzar al siguiente paso: "Paso ${state.current_step + 1}: [texto exacto del Excel]\n\n¿Listo para continuar?"
+- ${isLastStep ? 'Este es el último paso. Al terminar cierra con: "¿Hay algo más en lo que pueda ayudarte?"' : `Al mostrar el paso ${state.current_step + 1}, pregunta: "¿Listo para continuar?"`}
+- Tono empático y cercano, pero el contenido es fiel al Excel`;
 
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
