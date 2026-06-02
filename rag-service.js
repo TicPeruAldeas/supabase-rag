@@ -326,7 +326,8 @@ async function updateStep(stateId, currentStep, status = "active") {
 // limit = 10 → últimos 5 mensajes del usuario + sus 5 respuestas (5 pares completos)
 // Reset por inactividad: si el último mensaje tiene más de 24 h, se ignora
 // el historial anterior y se trata como conversación nueva (sin borrar BD).
-const HISTORY_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 horas
+const HISTORY_EXPIRY_MS    = 24 * 60 * 60 * 1000; // 24 horas
+const ACTIVE_FLOW_TIMEOUT_MS = 30 * 60 * 1000;      // 30 minutos sin interacción cierra el flujo
 
 async function getRecentHistory(userId, countryCode, limit = 10) {
   const { data, error } = await supabase
@@ -880,24 +881,34 @@ async function askAI(userId, countryCode, question) {
         const traceId = rootObs.traceId;
         rootObs.update({ input: question });
 
-        // 1. SMALL TALK
+        // 0. FLUJO ACTIVO — se evalúa PRIMERO para que "sí", "no", "ok", "listo",
+        //    "entendido", etc. no disparen small talk ni cache sino el paso actual.
+        //    Tracking implícito: activeFlowId = activeState.flow_id,
+        //    currentStep = activeState.current_step (en conversation_state),
+        //    waitingForConfirmation = deducido por el LLM desde el historial.
+        const activeState = await getActiveState(userId, countryCode);
+        if (activeState && (activeState.flow_type === "paso a paso" || activeState.flow_type === "paso_a_paso")) {
+          const lastUpdate = new Date(activeState.updated_at).getTime();
+          if (Date.now() - lastUpdate > ACTIVE_FLOW_TIMEOUT_MS) {
+            console.log(`⏰ Flujo expirado (>30 min): ${activeState.flow_id} — cancelando`);
+            await updateStep(activeState.id, activeState.current_step, "cancelled");
+            // Continúa al flujo normal (small talk, búsqueda, etc.)
+          } else {
+            console.log(`🔄 Flujo activo: ${activeState.flow_id} paso ${activeState.current_step}/${activeState.total_steps}`);
+            const result = await handlePasoAPaso(userId, countryCode, question, activeState);
+            if (result) {
+              rootObs.update({ output: result.response, metadata: { search_type: "paso_a_paso" } });
+              return result;
+            }
+            // accion === "otro": el usuario cambió de tema, continúa al flujo normal
+          }
+        }
+
+        // 1. SMALL TALK — solo si NO hay flujo activo
         if (SMALL_TALK_REGEX.test(question.trim())) {
           const response = `¡Hola! Soy el asistente virtual de ${orgName}. ¿En qué puedo ayudarte hoy?`;
           rootObs.update({ output: response, metadata: { search_type: "small_talk" } });
           return { response, metadata: { search_type: "small_talk", total_ms: Date.now() - totalStart } };
-        }
-
-        // 2. ¿Flujo activo? (paso a paso)
-        const activeState = await getActiveState(userId, countryCode);
-        if (activeState && (activeState.flow_type === "paso a paso" || activeState.flow_type === "paso_a_paso")) {
-          console.log(`🔄 Flujo activo: ${activeState.flow_id} [${activeState.flow_type}]`);
-          // handlePasoAPaso y detectIntent son hijos automáticos via OTel context
-          const result = await handlePasoAPaso(userId, countryCode, question, activeState);
-          if (result) {
-            rootObs.update({ output: result.response, metadata: { search_type: "paso_a_paso" } });
-            return result;
-          }
-          // intent === "otro": continúa al flujo normal de búsqueda
         }
 
         // 3. CACHE
