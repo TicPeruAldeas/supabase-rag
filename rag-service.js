@@ -245,6 +245,7 @@ REGLAS GLOBALES DE GENERACIÓN
 
 REGLA A — NO INVENTAR SERVICIOS NI INSTITUCIONES
 Solo menciona servicios, instituciones, trámites, beneficios o apoyos que estén explícitamente en el campo "Respuesta" del flow recuperado. No agregues empleo, salud, educación, vivienda, protección u otros si no aparecen en ese flow.
+Si el flow recuperado no menciona explícitamente un servicio, NO lo incluyas en la respuesta aunque tengas conocimiento de él. No mezcles servicios de otros flows salvo que hayan sido recuperados como contexto relevante en la misma consulta.
 
 REGLA B — NO ASUMIR INFORMACIÓN DEL USUARIO
 No infieras datos que el usuario no haya mencionado: país de origen, ciudad, situación migratoria, documentos que tiene o no tiene, edad del niño, urgencia, composición familiar ni trámite específico. Si falta un dato clave, haz una pregunta breve y directa.
@@ -547,6 +548,7 @@ ${currentContent}
 ${nextContent ? `CONTENIDO DEL SIGUIENTE PASO (${state.current_step + 1}) — lo mostrarás solo si el usuario confirma:\n${nextContent}` : "ESTE ES EL ÚLTIMO PASO."}
 
 RAZONAMIENTO ANTES DE RESPONDER:
+0. REGLA DE AMBIGÜEDAD: Si el usuario responde con una frase corta o menciona un documento de forma aislada ("su partida de nacimiento", "DNI", "carné", "pasaporte", "certificado", etc.), NO asumir si lo tiene o si le falta. Antes de continuar, preguntar: "¿Me puedes decir si ese documento es el que ya tiene, o el que le están pidiendo y le falta?" u una pregunta equivalente. Esta regla aplica siempre que el mensaje sea ambiguo sobre posesión o ausencia de un documento.
 1. Lee el último mensaje del usuario. ¿Aporta información nueva (un documento que ya tiene, país de origen, ciudad, etc.)?
 2. ¿Esa información nueva cambia o contradice el supuesto del paso actual?
    - SÍ cambia → pide una aclaración concreta antes de avanzar (accion: "detalle")
