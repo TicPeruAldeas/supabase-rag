@@ -261,6 +261,10 @@ La respuesta final debe estar basada en el campo "Respuesta" del flow recuperado
 
 const SMALL_TALK_REGEX = /^(hola+s?|buenos\s+(d[ií]as|tardes|noches)|buenas?(\s+(d[ií]as|tardes|noches))?|buen\s+d[ií]a|hi+|hey+|gracias+|ok|okay|sí|si|no|perfecto|genial|entendido|c[oó]mo\s+est[aá]s?|👍|😊)[\s!?,.:]*$/i;
 
+// Señales claras de continuación dentro de un flow paso a paso activo.
+// Si el mensaje NO coincide, se evalúa si es una intención nueva (retrieval).
+const CONTINUATION_REGEX = /^(sí|si|no|listo|ok|okay|ya|correcto|entendido|no\s+s[eé]|todav[ií]a\s+no|quiero\s+continuar|continuar|continúa|continua|siguiente|adelante|claro|dale|de\s+acuerdo|por\s+supuesto|a[ú]n\s+no|bien|perfecto|genial|👍|✅|☑)[.!,?\s]*$/i;
+
 // Mensajes vagos que necesitan una pregunta de clarificación antes de buscar
 const VAGUE_REGEX = /^(necesito(\s+(ayuda|apoyo|orientaci[oó]n|informaci[oó]n))?|tengo(\s+un)?\s+(problema|duda|consulta|pregunta)|me\s+(pueden?|podr[ií]a[ns]?)\s*ayudar|b[úu]sco\s+(ayuda|apoyo|informaci[oó]n|orientaci[oó]n)|ayuda(\s+por\s+favor)?|ay[úu]dame|orientaci[oó]n|quiero\s+(informaci[oó]n|saber|ayuda))[.!,?]*\s*$/i;
 
@@ -881,26 +885,51 @@ async function askAI(userId, countryCode, question) {
         const traceId = rootObs.traceId;
         rootObs.update({ input: question });
 
-        // 0. FLUJO ACTIVO — se evalúa PRIMERO para que "sí", "no", "ok", "listo",
-        //    "entendido", etc. no disparen small talk ni cache sino el paso actual.
-        //    Tracking implícito: activeFlowId = activeState.flow_id,
-        //    currentStep = activeState.current_step (en conversation_state),
-        //    waitingForConfirmation = deducido por el LLM desde el historial.
+        // 0. FLUJO ACTIVO — se evalúa primero.
+        //    Si el mensaje es continuación clara → sigue el paso actual.
+        //    Si es una pregunta nueva → retrieval para detectar intención nueva.
+        //    precomputedFlow evita hacer doble llamada a embeddings si ya se buscó aquí.
+        let precomputedFlow = null;
+
         const activeState = await getActiveState(userId, countryCode);
         if (activeState && (activeState.flow_type === "paso a paso" || activeState.flow_type === "paso_a_paso")) {
-          const lastUpdate = new Date(activeState.updated_at).getTime();
-          if (Date.now() - lastUpdate > ACTIVE_FLOW_TIMEOUT_MS) {
+          const elapsed = Date.now() - new Date(activeState.updated_at).getTime();
+
+          if (elapsed > ACTIVE_FLOW_TIMEOUT_MS) {
+            // Flujo expirado → cancelar y procesar como mensaje nuevo
             console.log(`⏰ Flujo expirado (>30 min): ${activeState.flow_id} — cancelando`);
             await updateStep(activeState.id, activeState.current_step, "cancelled");
-            // Continúa al flujo normal (small talk, búsqueda, etc.)
-          } else {
-            console.log(`🔄 Flujo activo: ${activeState.flow_id} paso ${activeState.current_step}/${activeState.total_steps}`);
+
+          } else if (CONTINUATION_REGEX.test(question.trim())) {
+            // Señal de continuación explícita → seguir el paso actual sin retrieval
+            console.log(`▶️ Continuación del flujo: ${activeState.flow_id} paso ${activeState.current_step}/${activeState.total_steps}`);
             const result = await handlePasoAPaso(userId, countryCode, question, activeState);
             if (result) {
               rootObs.update({ output: result.response, metadata: { search_type: "paso_a_paso" } });
               return result;
             }
-            // accion === "otro": el usuario cambió de tema, continúa al flujo normal
+            // accion "otro" → continúa al flujo normal
+
+          } else {
+            // Mensaje más complejo → verificar si es una intención nueva
+            console.log(`🔍 Mensaje complejo con flujo activo — verificando intención nueva`);
+            const candidate = await searchFlow(countryCode, question);
+
+            if (candidate && candidate.similarity >= 0.55) {
+              // Nueva intención con alta confianza → cancelar flujo anterior y usar el nuevo
+              console.log(`🔀 Nueva intención (sim=${candidate.similarity?.toFixed(3)}): ${candidate.flow_id} — cancelando ${activeState.flow_id}`);
+              await updateStep(activeState.id, activeState.current_step, "cancelled");
+              precomputedFlow = candidate; // se usará en paso 4, sin re-embeddings
+
+            } else {
+              // Sin nueva intención clara → continuar con el flujo activo
+              console.log(`↩️ Sin nueva intención — continuando: ${activeState.flow_id} paso ${activeState.current_step}`);
+              const result = await handlePasoAPaso(userId, countryCode, question, activeState);
+              if (result) {
+                rootObs.update({ output: result.response, metadata: { search_type: "paso_a_paso" } });
+                return result;
+              }
+            }
           }
         }
 
@@ -929,8 +958,8 @@ async function askAI(userId, countryCode, question) {
         }
 
         // 4. BUSCAR EN knowledge_flows (Excel)
-        // searchFlow → embedText → supabase-match-flows: todos hijos automáticos
-        const flow = await searchFlow(countryCode, question);
+        // Si ya se buscó en el paso 0 (cambio de intención detectado), reutilizar sin re-embeddings.
+        const flow = precomputedFlow ?? await searchFlow(countryCode, question);
 
         if (flow) {
           console.log(`📋 Flow: ${flow.flow_id} [${flow.flow_type}] sim: ${flow.similarity?.toFixed(3)}`);
