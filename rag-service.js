@@ -479,32 +479,27 @@ async function presentStepWithLLM(stepContent, { isDetail, isLastStep, question,
     let userTask;
 
     if (isInitialPresentation) {
-      const stepsList = steps.map(s => `${s.number}. ${s.summary}`).join('\n');
       systemText = `Organización: ${orgName}. País: ${countryCode}.
-Eres un asistente de WhatsApp que inicia un proceso guiado. Debes presentar el proceso al usuario.
+Eres un asistente de WhatsApp que entrega información de forma progresiva, un paso a la vez.
 
-PASOS DEL PROCESO (fuente: Excel — usa estos datos):
-${stepsList}
-
-DETALLE DEL PASO 1 (el único que debes desarrollar ahora):
+DETALLE DEL PASO 1 DE ${steps.length} (fuente Excel — reformular, no copiar literalmente):
 ${stepContent}
 
 Genera la respuesta con EXACTAMENTE este formato:
-"Claro, vamos paso a paso.
+"[Breve frase de contexto si aplica].
 
-Para este proceso seguiremos estos pasos:
-[lista los ${steps.length} pasos con numeración y títulos breves]
+Paso 1 de ${steps.length}:
+[Explicación breve del Paso 1 en lenguaje simple para WhatsApp].
 
-Empecemos con el Paso 1: [explicación breve del Paso 1 en lenguaje simple para WhatsApp].
-
-[Pregunta concreta y específica sobre el Paso 1]"
+¿Quieres que te diga el siguiente paso?"
 
 REGLAS OBLIGATORIAS:
-- Lista TODOS los pasos con numeración, pero solo títulos cortos (no el detalle completo)
-- Desarrolla únicamente el Paso 1 con su explicación breve
-- No copies el texto del Excel literalmente; reformula en lenguaje simple
-- No agregues información fuera del Excel
-- La pregunta final debe ser específica al Paso 1, no genérica
+- NO listar todos los pasos al inicio
+- Explicar SOLO el Paso 1
+- Reformular en lenguaje simple; no copiar literalmente el Excel
+- No agregar información fuera del Excel
+- No preguntar "¿ya hiciste este paso?" ni pedir confirmación de ejecución
+- Terminar con "¿Quieres que te diga el siguiente paso?" o una variante natural
 - Tono empático y cercano`;
       userTask = `La pregunta original del usuario fue: "${question}"`;
 
@@ -602,27 +597,24 @@ ${currentContent}
 
 ${nextContent ? `CONTENIDO DEL SIGUIENTE PASO (${state.current_step + 1}) — lo mostrarás solo si el usuario confirma:\n${nextContent}` : "ESTE ES EL ÚLTIMO PASO."}
 
-RAZONAMIENTO ANTES DE RESPONDER:
-0. REGLA DE AMBIGÜEDAD: Si el usuario menciona un documento de forma aislada ("partida de nacimiento", "DNI", "carné", "pasaporte", etc.), NO asumir si lo tiene o si le falta. Preguntar: "¿Ese documento es el que ya tiene, o el que le están pidiendo y le falta?" Esta regla aplica siempre que sea ambiguo.
-1. ¿El mensaje del usuario realmente confirma o responde lo que se necesitaba del Paso ${state.current_step}?
-   - SÍ confirmado y coherente → avanzar al Paso ${state.current_step + 1} (accion: "siguiente")
-   - NO confirmado o falta información → no avanzar; pedir el dato faltante (accion: "detalle")
-     Formato: "Antes de pasar al Paso ${state.current_step + 1}, necesito confirmar [dato faltante del Paso ${state.current_step}]..."
-2. Si el usuario aportó información que cambia el diagnóstico → pide aclaración antes de avanzar (accion: "detalle")
-3. Si el usuario se despide o ya resolvió su duda → accion: "finalizar"
-4. Si pregunta algo completamente diferente → accion: "otro"
-5. Si el paso menciona ciudad, sede o ubicación → pregunta la ciudad antes de avanzar
+LÓGICA DE RESPUESTA:
+1. Si el usuario dice "sí", "si", "siguiente", "continúa", "continua", "luego", "luego qué hago", "dime más", "paso ${state.current_step + 1}" u otra señal de querer continuar → mostrar el Paso ${state.current_step + 1} (accion: "siguiente")
+2. Si pide explícitamente ver TODOS los pasos ("dime todos los pasos", "mándame todo", "quiero ver todo el proceso", "dame el resumen completo") → mostrar todos con formato "Paso X de ${state.total_steps}" cada uno (accion: "todos")
+3. Si tiene dudas o pide más detalle del paso actual → explicar sin avanzar (accion: "detalle")
+4. Si pregunta algo completamente diferente o cambia de tema → cerrar flow (accion: "otro")
+5. Si se despide o ya tiene todo claro → cerrar flow (accion: "finalizar")
 
 Responde ÚNICAMENTE con JSON válido (sin texto fuera del JSON):
-{"accion": "siguiente|detalle|finalizar|otro", "respuesta": "..."}
+{"accion": "siguiente|todos|detalle|finalizar|otro", "respuesta": "..."}
 
-REGLAS ESTRICTAS para el campo "respuesta":
-- Al avanzar al siguiente paso, SIEMPRE indicar el número: "Paso ${state.current_step + 1}: [contenido breve]"
-- Máximo un paso por mensaje; no envíes varios pasos juntos
-- Reformula el contenido brevemente en lenguaje simple para WhatsApp; no copies el Excel literalmente
-- No agregues servicios, instituciones ni información fuera del Excel
-- Termina con una pregunta concreta y específica al paso actual — evita "¿Listo para continuar?" genérico
-- ${isLastStep ? 'Es el último paso. Al terminar cierra con: "¿Hay algo más en lo que pueda ayudarte?"' : 'No menciones ni anticipes pasos más allá del siguiente'}
+REGLAS para el campo "respuesta":
+- Al avanzar, SIEMPRE usar el formato: "Paso ${state.current_step + 1} de ${state.total_steps}:\n[explicación breve].\n\n¿Quieres que te diga el paso ${state.current_step + 2}?"
+- Si accion es "todos", listar TODOS los pasos con "Paso X de ${state.total_steps}: [resumen breve]" y cerrar con "¿Tienes alguna duda sobre alguno de ellos?"
+- Un solo paso por mensaje (salvo accion "todos")
+- Reformular el contenido del Excel en lenguaje simple; no copiar literalmente
+- No agregar información fuera del Excel
+- NO preguntar "¿ya hiciste este paso?" ni pedir confirmación de ejecución
+- ${isLastStep ? 'Último paso. Cerrar con: "Esos son los pasos principales. ¿Tienes alguna duda sobre alguno de ellos?"' : ''}
 - Tono empático y cercano para WhatsApp`;
 
     const msg = await anthropic.messages.create({
@@ -667,6 +659,9 @@ REGLAS ESTRICTAS para el campo "respuesta":
       isLastStep
         ? await updateStep(state.id, state.current_step, "completed")
         : await updateStep(state.id, state.current_step + 1);
+    } else if (accion === "todos") {
+      // Usuario pidió todos los pasos explícitamente → marcar como completado
+      await updateStep(state.id, state.total_steps, "completed");
     } else if (accion === "finalizar") {
       await updateStep(state.id, state.current_step, "completed");
     } else if (accion === "otro") {
