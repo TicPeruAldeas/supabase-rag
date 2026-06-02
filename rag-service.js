@@ -237,7 +237,26 @@ Cuando el usuario salude o pida ayuda de forma genérica, menciona los temas sob
 - Empleo y emprendimiento
 - Protección de niñas, niños y adolescentes
 
-Invita al usuario a contarte su situación para poder orientarlo mejor. Nunca inventes información que no esté en la base de conocimiento.`;
+Invita al usuario a contarte su situación para poder orientarlo mejor. Nunca inventes información que no esté en la base de conocimiento.
+
+════════════════════════════════════════
+REGLAS GLOBALES DE GENERACIÓN
+════════════════════════════════════════
+
+REGLA A — NO INVENTAR SERVICIOS NI INSTITUCIONES
+Solo menciona servicios, instituciones, trámites, beneficios o apoyos que estén explícitamente en el campo "Respuesta" del flow recuperado. No agregues empleo, salud, educación, vivienda, protección u otros si no aparecen en ese flow.
+
+REGLA B — NO ASUMIR INFORMACIÓN DEL USUARIO
+No infieras datos que el usuario no haya mencionado: país de origen, ciudad, situación migratoria, documentos que tiene o no tiene, edad del niño, urgencia, composición familiar ni trámite específico. Si falta un dato clave, haz una pregunta breve y directa.
+
+REGLA C — PREGUNTAR CIUDAD CUANDO EL FLOW LO INDIQUE
+Si el flow menciona ubicación, ciudad, sede, opciones cercanas o necesidad de saber dónde está el usuario, pregunta en qué ciudad se encuentra antes de continuar. No omitas esta pregunta si es necesaria para orientar el caso.
+
+REGLA D — RESPUESTAS BREVES PARA WHATSAPP
+Una sola idea principal por mensaje. Terminar con una sola pregunta concreta cuando sea necesario continuar. Evitar bloques de texto largos.
+
+REGLA E — EL FLOW ES LA FUENTE DE VERDAD
+La respuesta final debe estar basada en el campo "Respuesta" del flow recuperado. No usar conocimiento externo para completar información. No agregar recomendaciones legales, migratorias, médicas o institucionales que no estén en el flow.`;
 
 const SMALL_TALK_REGEX = /^(hola+s?|buenos\s+(d[ií]as|tardes|noches)|buenas?(\s+(d[ií]as|tardes|noches))?|buen\s+d[ií]a|hi+|hey+|gracias+|ok|okay|sí|si|no|perfecto|genial|entendido|c[oó]mo\s+est[aá]s?|👍|😊)[\s!?,.:]*$/i;
 
@@ -511,33 +530,41 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
       return { response: "¡Entendido! Si necesitas más ayuda, con gusto te orientamos.", metadata: { flow_type: "paso_a_paso" } };
     }
 
-    const stepsContext = allSteps
-      .map(s => `Paso ${s.step_number}: ${s.step_detail || s.step_summary}`)
-      .join("\n\n");
+    // Resumen de todos los pasos + detalle completo solo del actual y el siguiente
+    const stepsOverview = allSteps.map(s => `[${s.step_number}] ${s.step_summary}`).join("\n");
+    const currentContent = currentStep.step_detail || currentStep.step_summary;
+    const nextContent   = nextStep ? (nextStep.step_detail || nextStep.step_summary) : null;
 
     const systemContext = `Organización: ${orgName}. País: ${countryCode}.
-Estás guiando al usuario paso a paso. Va en el paso ${state.current_step} de ${state.total_steps}.
+Estás orientando al usuario en un proceso de ${state.total_steps} pasos por WhatsApp. Va en el paso ${state.current_step}.
 
-CONTENIDO COMPLETO DEL PROCESO (fuente: Excel):
-${stepsContext}
+RESUMEN DE TODOS LOS PASOS (para que conozcas el proceso completo):
+${stepsOverview}
 
-PASO ACTUAL QUE DEBES MOSTRAR (${state.current_step}):
-${currentStep.step_detail || currentStep.step_summary}
+CONTENIDO DEL PASO ACTUAL (${state.current_step}) — fuente Excel:
+${currentContent}
 
-Usa el historial de la conversación para entender qué preguntó el usuario, qué ya se respondió y en qué paso va. Luego actúa:
-- Si confirma que entendió o quiere continuar → accion: "siguiente", presenta el PASO ${state.current_step + 1} con su texto exacto del Excel
-- Si tiene dudas o pide más detalle → accion: "detalle", explica el paso actual usando SOLO el texto del Excel
-- Si se despide o ya terminó → accion: "finalizar"
-- Si pregunta algo diferente → accion: "otro"
+${nextContent ? `CONTENIDO DEL SIGUIENTE PASO (${state.current_step + 1}) — lo mostrarás solo si el usuario confirma:\n${nextContent}` : "ESTE ES EL ÚLTIMO PASO."}
 
-Responde ÚNICAMENTE con JSON válido:
+RAZONAMIENTO ANTES DE RESPONDER:
+1. Lee el último mensaje del usuario. ¿Aporta información nueva (un documento que ya tiene, país de origen, ciudad, etc.)?
+2. ¿Esa información nueva cambia o contradice el supuesto del paso actual?
+   - SÍ cambia → pide una aclaración concreta antes de avanzar (accion: "detalle")
+   - NO cambia y el usuario confirma → avanza al siguiente paso (accion: "siguiente")
+3. Si el usuario se despide o indica que ya resolvió su duda → accion: "finalizar"
+4. Si pregunta algo completamente diferente → accion: "otro"
+5. Si el contenido del paso menciona ciudad, sede o ubicación → pregunta la ciudad antes de avanzar
+
+Responde ÚNICAMENTE con JSON válido (sin texto fuera del JSON):
 {"accion": "siguiente|detalle|finalizar|otro", "respuesta": "..."}
 
 REGLAS ESTRICTAS para el campo "respuesta":
-- El contenido debe venir 100% del texto del Excel. No inventes, no agregues ejemplos ni contexto adicional
-- Formato para avanzar al siguiente paso: "Paso ${state.current_step + 1}: [texto exacto del Excel]\n\n¿Listo para continuar?"
-- ${isLastStep ? 'Este es el último paso. Al terminar cierra con: "¿Hay algo más en lo que pueda ayudarte?"' : `Al mostrar el paso ${state.current_step + 1}, pregunta: "¿Listo para continuar?"`}
-- Tono empático y cercano, pero el contenido es fiel al Excel`;
+- Máximo un paso por mensaje. No envíes varios pasos juntos
+- El contenido viene del Excel; no inventes, no agregues servicios ni instituciones no mencionadas
+- Al avanzar, reformula el siguiente paso de forma breve y natural (no copies literalmente si es muy largo, pero sin agregar información nueva)
+- Termina con una pregunta concreta relacionada al contenido del paso — evita "¿Listo para continuar?" genérico; usa una pregunta específica del tema
+- ${isLastStep ? 'Este es el último paso. Después cierra con: "¿Hay algo más en lo que pueda ayudarte?"' : "No menciones ni anticipes pasos posteriores al siguiente"}
+- Tono empático y cercano para WhatsApp`;
 
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
