@@ -259,11 +259,13 @@ Una sola idea principal por mensaje. Terminar con una sola pregunta concreta cua
 REGLA E — EL FLOW ES LA FUENTE DE VERDAD
 La respuesta final debe estar basada en el campo "Respuesta" del flow recuperado. No usar conocimiento externo para completar información. No agregar recomendaciones legales, migratorias, médicas o institucionales que no estén en el flow.`;
 
-const SMALL_TALK_REGEX = /^(hola+s?|buenos\s+(d[ií]as|tardes|noches)|buenas?(\s+(d[ií]as|tardes|noches))?|buen\s+d[ií]a|hi+|hey+|gracias+|ok|okay|sí|si|no|perfecto|genial|entendido|c[oó]mo\s+est[aá]s?|👍|😊)[\s!?,.:]*$/i;
+// Solo saludos reales. Confirmaciones cortas (sí, ok, listo...) se eliminaron
+// para que nunca disparen el saludo si hay contexto activo o reciente.
+const SMALL_TALK_REGEX = /^(hola+s?|buenos\s+(d[ií]as|tardes|noches)|buenas?(\s+(d[ií]as|tardes|noches))?|buen\s+d[ií]a|hi+|hey+|😊)[\s!?,.:]*$/i;
 
-// Señales claras de continuación dentro de un flow paso a paso activo.
-// Si el mensaje NO coincide, se evalúa si es una intención nueva (retrieval).
-const CONTINUATION_REGEX = /^(sí|si|no|listo|ok|okay|ya|correcto|entendido|no\s+s[eé]|todav[ií]a\s+no|quiero\s+continuar|continuar|continúa|continua|siguiente|adelante|claro|dale|de\s+acuerdo|por\s+supuesto|a[ú]n\s+no|bien|perfecto|genial|👍|✅|☑)[.!,?\s]*$/i;
+// Señales de continuación dentro de un flow activo o contexto reciente.
+// "Sí", "ok", "listo", "luego qué hago", etc. nunca deben activar saludo.
+const CONTINUATION_REGEX = /^(sí|si|no|listo|ok|okay|ya|correcto|entendido|no\s+s[eé]|todav[ií]a\s+no|quiero\s+continuar|continuar|continúa|continua|siguiente|el\s+siguiente|segundo\s+paso|el\s+segundo\s+paso|paso\s+\d+|adelante|claro|dale|de\s+acuerdo|por\s+supuesto|a[ú]n\s+no|bien|perfecto|genial|luego|luego\s+(que|qué)\s+hago|dime\s+m[aá]s|👍|✅|☑)[.!,?\s]*$/i;
 
 // Mensajes vagos que necesitan una pregunta de clarificación antes de buscar
 const VAGUE_REGEX = /^(necesito(\s+(ayuda|apoyo|orientaci[oó]n|informaci[oó]n))?|tengo(\s+un)?\s+(problema|duda|consulta|pregunta)|me\s+(pueden?|podr[ií]a[ns]?)\s*ayudar|b[úu]sco\s+(ayuda|apoyo|informaci[oó]n|orientaci[oó]n)|ayuda(\s+por\s+favor)?|ay[úu]dame|orientaci[oó]n|quiero\s+(informaci[oó]n|saber|ayuda))[.!,?]*\s*$/i;
