@@ -501,6 +501,7 @@ REGLAS OBLIGATORIAS:
 - Reformular en lenguaje simple; no copiar literalmente el Excel
 - No agregar información fuera del Excel
 - No preguntar "¿ya hiciste este paso?" ni pedir confirmación de ejecución
+- No hagas preguntas cuya respuesta no cambie el contenido de los pasos siguientes. Si los pasos del flow son los mismos independientemente de la respuesta del usuario, no preguntes por esa variable. Solo pregunta lo que realmente determina el siguiente paso según el flow
 - Terminar con "¿Quieres que te diga el siguiente paso?" o una variante natural
 - Tono empático y cercano`;
       userTask = `La pregunta original del usuario fue: "${question}"`;
@@ -616,6 +617,7 @@ REGLAS para el campo "respuesta":
 - Reformular el contenido del Excel en lenguaje simple; no copiar literalmente
 - No agregar información fuera del Excel
 - NO preguntar "¿ya hiciste este paso?" ni pedir confirmación de ejecución
+- No hagas preguntas cuya respuesta no cambie el contenido de los pasos siguientes. Si el flow tiene los mismos pasos independientemente de la respuesta del usuario, no preguntes por esa variable. Solo pregunta lo que realmente determina el siguiente paso según el contenido del flow
 - ${isLastStep ? 'Último paso. Cerrar con: "Esos son los pasos principales. ¿Tienes alguna duda sobre alguno de ellos?"' : ''}
 - Tono empático y cercano para WhatsApp`;
 
