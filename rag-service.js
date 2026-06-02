@@ -459,37 +459,87 @@ function mergeResults(semanticResults, fastResults) {
   return merged.slice(0, 6);
 }
 
-// ── Presentar un paso individual con LLM ─────────────────────
-// Reemplaza los strings hardcodeados de handlePasoAPaso con tono conversacional
-async function presentStepWithLLM(stepContent, { isDetail, isLastStep, question, history, orgName, countryCode }) {
+// ── Presentar un paso con LLM ────────────────────────────────
+// Presentación inicial (currentStepNumber=1, allSteps disponible):
+//   lista todos los pasos con títulos breves + desarrolla solo el paso 1.
+// Presentaciones siguientes o detalle: indicar "Paso N:" explícitamente.
+async function presentStepWithLLM(stepContent, { isDetail, isLastStep, question, history, orgName, countryCode, allSteps, currentStepNumber }) {
   return startActiveObservation("claude-step-response", async (obs) => {
-    obs.update({ input: { isDetail, isLastStep } });
+    obs.update({ input: { isDetail, isLastStep, currentStepNumber } });
 
-    const endInstruction = isLastStep
-      ? "Este es el último punto. Al final pregunta de forma natural si necesita más detalle o ya tiene todo claro."
-      : "Al final pregunta de forma natural si quiere más detalle, continuar con lo siguiente, o tiene alguna duda.";
+    // Normaliza allSteps a {number, summary} independientemente del origen
+    const steps = (allSteps || []).map(s => ({
+      number: s.number ?? s.step_number,
+      summary: s.summary ?? s.step_summary,
+    }));
 
-    const task = isDetail
-      ? `Explica el siguiente detalle de forma empática y clara:\n${stepContent}`
-      : `Presenta el siguiente contenido de forma conversacional:\n${stepContent}`;
+    const isInitialPresentation = !isDetail && currentStepNumber === 1 && steps.length > 0;
+
+    let systemText;
+    let userTask;
+
+    if (isInitialPresentation) {
+      const stepsList = steps.map(s => `${s.number}. ${s.summary}`).join('\n');
+      systemText = `Organización: ${orgName}. País: ${countryCode}.
+Eres un asistente de WhatsApp que inicia un proceso guiado. Debes presentar el proceso al usuario.
+
+PASOS DEL PROCESO (fuente: Excel — usa estos datos):
+${stepsList}
+
+DETALLE DEL PASO 1 (el único que debes desarrollar ahora):
+${stepContent}
+
+Genera la respuesta con EXACTAMENTE este formato:
+"Claro, vamos paso a paso.
+
+Para este proceso seguiremos estos pasos:
+[lista los ${steps.length} pasos con numeración y títulos breves]
+
+Empecemos con el Paso 1: [explicación breve del Paso 1 en lenguaje simple para WhatsApp].
+
+[Pregunta concreta y específica sobre el Paso 1]"
+
+REGLAS OBLIGATORIAS:
+- Lista TODOS los pasos con numeración, pero solo títulos cortos (no el detalle completo)
+- Desarrolla únicamente el Paso 1 con su explicación breve
+- No copies el texto del Excel literalmente; reformula en lenguaje simple
+- No agregues información fuera del Excel
+- La pregunta final debe ser específica al Paso 1, no genérica
+- Tono empático y cercano`;
+      userTask = `La pregunta original del usuario fue: "${question}"`;
+
+    } else if (isDetail) {
+      systemText = `Organización: ${orgName}. País: ${countryCode}.
+Eres un asistente de WhatsApp. Explica el siguiente detalle de forma breve y clara.
+REGLAS:
+- No copies el texto literalmente; reformula con palabras simples
+- No cambies datos concretos (direcciones, teléfonos, requisitos, instituciones)
+- No agregues información fuera del texto
+- Tono empático y cercano
+- Termina con una pregunta concreta relacionada al detalle`;
+      userTask = `Detalle a explicar:\n${stepContent}`;
+
+    } else {
+      // Paso N > 1 durante navegación
+      systemText = `Organización: ${orgName}. País: ${countryCode}.
+Eres un asistente de WhatsApp guiando al usuario en el Paso ${currentStepNumber ?? ''}.
+REGLAS:
+- Comienza indicando el número: "Paso ${currentStepNumber ?? ''}: ..."
+- Reformula el contenido brevemente, sin copiar literalmente
+- No cambies datos concretos (direcciones, teléfonos, requisitos, instituciones)
+- No agregues información fuera del texto
+- ${isLastStep ? 'Es el último paso. Al terminar pregunta si necesita más ayuda.' : 'Termina con una pregunta concreta para continuar o aclarar dudas'}`;
+      userTask = `Contenido del Paso ${currentStepNumber ?? ''}:\n${stepContent}`;
+    }
 
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
-      max_tokens: 250,
+      max_tokens: isInitialPresentation ? 400 : 250,
       system: [
         { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-        {
-          type: "text",
-          text: `Organización: ${orgName}. País: ${countryCode}.
-Eres un asistente empático que apoya a migrantes y familias vulnerables. Presenta la información de forma conversacional y natural, como un amigo que orienta. NO uses el formato "Paso X de Y" ni numeraciones. Integra el contenido fluidamente en la conversación.
-REGLAS:
-- No cambies ningún dato concreto (direcciones, teléfonos, requisitos, nombres de instituciones)
-- No agregues información que no esté en el texto
-- Tono empático, cálido y cercano
-- ${endInstruction}`,
-        },
+        { type: "text", text: systemText },
       ],
-      messages: [...history, { role: "user", content: task }],
+      messages: [...history, { role: "user", content: userTask }],
     });
 
     const resp = msg.content[0]?.text || stepContent;
@@ -553,24 +603,26 @@ ${currentContent}
 ${nextContent ? `CONTENIDO DEL SIGUIENTE PASO (${state.current_step + 1}) — lo mostrarás solo si el usuario confirma:\n${nextContent}` : "ESTE ES EL ÚLTIMO PASO."}
 
 RAZONAMIENTO ANTES DE RESPONDER:
-0. REGLA DE AMBIGÜEDAD: Si el usuario responde con una frase corta o menciona un documento de forma aislada ("su partida de nacimiento", "DNI", "carné", "pasaporte", "certificado", etc.), NO asumir si lo tiene o si le falta. Antes de continuar, preguntar: "¿Me puedes decir si ese documento es el que ya tiene, o el que le están pidiendo y le falta?" u una pregunta equivalente. Esta regla aplica siempre que el mensaje sea ambiguo sobre posesión o ausencia de un documento.
-1. Lee el último mensaje del usuario. ¿Aporta información nueva (un documento que ya tiene, país de origen, ciudad, etc.)?
-2. ¿Esa información nueva cambia o contradice el supuesto del paso actual?
-   - SÍ cambia → pide una aclaración concreta antes de avanzar (accion: "detalle")
-   - NO cambia y el usuario confirma → avanza al siguiente paso (accion: "siguiente")
-3. Si el usuario se despide o indica que ya resolvió su duda → accion: "finalizar"
+0. REGLA DE AMBIGÜEDAD: Si el usuario menciona un documento de forma aislada ("partida de nacimiento", "DNI", "carné", "pasaporte", etc.), NO asumir si lo tiene o si le falta. Preguntar: "¿Ese documento es el que ya tiene, o el que le están pidiendo y le falta?" Esta regla aplica siempre que sea ambiguo.
+1. ¿El mensaje del usuario realmente confirma o responde lo que se necesitaba del Paso ${state.current_step}?
+   - SÍ confirmado y coherente → avanzar al Paso ${state.current_step + 1} (accion: "siguiente")
+   - NO confirmado o falta información → no avanzar; pedir el dato faltante (accion: "detalle")
+     Formato: "Antes de pasar al Paso ${state.current_step + 1}, necesito confirmar [dato faltante del Paso ${state.current_step}]..."
+2. Si el usuario aportó información que cambia el diagnóstico → pide aclaración antes de avanzar (accion: "detalle")
+3. Si el usuario se despide o ya resolvió su duda → accion: "finalizar"
 4. Si pregunta algo completamente diferente → accion: "otro"
-5. Si el contenido del paso menciona ciudad, sede o ubicación → pregunta la ciudad antes de avanzar
+5. Si el paso menciona ciudad, sede o ubicación → pregunta la ciudad antes de avanzar
 
 Responde ÚNICAMENTE con JSON válido (sin texto fuera del JSON):
 {"accion": "siguiente|detalle|finalizar|otro", "respuesta": "..."}
 
 REGLAS ESTRICTAS para el campo "respuesta":
-- Máximo un paso por mensaje. No envíes varios pasos juntos
-- El contenido viene del Excel; no inventes, no agregues servicios ni instituciones no mencionadas
-- Al avanzar, reformula el siguiente paso de forma breve y natural (no copies literalmente si es muy largo, pero sin agregar información nueva)
-- Termina con una pregunta concreta relacionada al contenido del paso — evita "¿Listo para continuar?" genérico; usa una pregunta específica del tema
-- ${isLastStep ? 'Este es el último paso. Después cierra con: "¿Hay algo más en lo que pueda ayudarte?"' : "No menciones ni anticipes pasos posteriores al siguiente"}
+- Al avanzar al siguiente paso, SIEMPRE indicar el número: "Paso ${state.current_step + 1}: [contenido breve]"
+- Máximo un paso por mensaje; no envíes varios pasos juntos
+- Reformula el contenido brevemente en lenguaje simple para WhatsApp; no copies el Excel literalmente
+- No agregues servicios, instituciones ni información fuera del Excel
+- Termina con una pregunta concreta y específica al paso actual — evita "¿Listo para continuar?" genérico
+- ${isLastStep ? 'Es el último paso. Al terminar cierra con: "¿Hay algo más en lo que pueda ayudarte?"' : 'No menciones ni anticipes pasos más allá del siguiente'}
 - Tono empático y cercano para WhatsApp`;
 
     const msg = await anthropic.messages.create({
@@ -750,6 +802,7 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode,
       return presentStepWithLLM(steps[0].summary, {
         isDetail: false, isLastStep: steps.length === 1,
         question, history, orgName, countryCode,
+        allSteps: steps, currentStepNumber: 1,
       });
     }
   }
@@ -989,6 +1042,7 @@ async function askAI(userId, countryCode, question) {
             const response = await presentStepWithLLM(steps[0].step_summary, {
               isDetail: false, isLastStep: steps.length === 1,
               question, history, orgName, countryCode,
+              allSteps: steps, currentStepNumber: 1,
             });
             rootObs.update({ output: response, metadata: { search_type: "flow_paso_a_paso", flow_id: flow.flow_id } });
             return { response, metadata: { search_type: "flow_paso_a_paso", flow_id: flow.flow_id, total_steps: steps.length } };
