@@ -308,14 +308,41 @@ async function getActiveState(userId, countryCode) {
   return data || null;
 }
 
-async function upsertState(userId, countryCode, flowId, flowType, currentStep, totalSteps, status = "active") {
-  const { error: cancelErr } = await supabase
+function storedStateStatus(status, stateId) {
+  if (status === "active") return status;
+  return `${status}:${stateId}`;
+}
+
+async function closeState(stateId, currentStep, status = "cancelled") {
+  const storedStatus = storedStateStatus(status, stateId);
+  const { error } = await supabase
     .from("conversation_state")
-    .update({ status: "cancelled", updated_at: new Date().toISOString() })
+    .update({ current_step: currentStep, status: storedStatus, updated_at: new Date().toISOString() })
+    .eq("id", stateId);
+  if (error) console.error(`❌ closeState [${stateId}] → paso ${currentStep}/${storedStatus}:`, error.message);
+  return !error;
+}
+
+async function closeActiveStates(userId, countryCode, status = "cancelled") {
+  const { data, error } = await supabase
+    .from("conversation_state")
+    .select("id,current_step")
     .eq("user_id", userId)
     .eq("country_code", countryCode)
     .eq("status", "active");
-  if (cancelErr) console.error(`⚠️  upsertState(cancel) [${userId}/${countryCode}]:`, cancelErr.message);
+
+  if (error) {
+    console.error(`⚠️  closeActiveStates(select) [${userId}/${countryCode}]:`, error.message);
+    return;
+  }
+
+  for (const row of data || []) {
+    await closeState(row.id, row.current_step, status);
+  }
+}
+
+async function upsertState(userId, countryCode, flowId, flowType, currentStep, totalSteps, status = "active") {
+  await closeActiveStates(userId, countryCode, "cancelled");
 
   if (status === "cancelled") return;
 
@@ -337,7 +364,7 @@ async function upsertState(userId, countryCode, flowId, flowType, currentStep, t
 async function updateStep(stateId, currentStep, status = "active") {
   const { error } = await supabase
     .from("conversation_state")
-    .update({ current_step: currentStep, status, updated_at: new Date().toISOString() })
+    .update({ current_step: currentStep, status: storedStateStatus(status, stateId), updated_at: new Date().toISOString() })
     .eq("id", stateId);
   if (error) console.error(`❌ updateStep [${stateId}] → paso ${currentStep}/${status}:`, error.message);
 }
