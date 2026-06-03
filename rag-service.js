@@ -267,6 +267,10 @@ const SMALL_TALK_REGEX = /^(hola+s?|buenos\s+(d[ií]as|tardes|noches)|buenas?(\s
 // "Sí", "ok", "listo", "luego qué hago", etc. nunca deben activar saludo.
 const CONTINUATION_REGEX = /^(sí|si|no|listo|ok|okay|ya|correcto|entendido|no\s+s[eé]|todav[ií]a\s+no|quiero\s+continuar|continuar|continúa|continua|siguiente|el\s+siguiente|segundo\s+paso|el\s+segundo\s+paso|paso\s+\d+|adelante|claro|dale|de\s+acuerdo|por\s+supuesto|a[ú]n\s+no|bien|perfecto|genial|luego|luego\s+(que|qué)\s+hago|dime\s+m[aá]s|👍|✅|☑)[.!,?\s]*$/i;
 
+function isContinuationMessage(question) {
+  return CONTINUATION_REGEX.test((question || "").trim());
+}
+
 // Mensajes vagos que necesitan una pregunta de clarificación antes de buscar
 const VAGUE_REGEX = /^(necesito(\s+(ayuda|apoyo|orientaci[oó]n|informaci[oó]n))?|tengo(\s+un)?\s+(problema|duda|consulta|pregunta)|me\s+(pueden?|podr[ií]a[ns]?)\s*ayudar|b[úu]sco\s+(ayuda|apoyo|informaci[oó]n|orientaci[oó]n)|ayuda(\s+por\s+favor)?|ay[úu]dame|orientaci[oó]n|quiero\s+(informaci[oó]n|saber|ayuda))[.!,?]*\s*$/i;
 
@@ -289,27 +293,33 @@ async function embedText(text) {
 
 // ── Estado conversacional ─────────────────────────────────────
 async function getActiveState(userId, countryCode) {
-  const { data } = await supabase
+  // order+limit(1)+maybeSingle: tolera 0 o varias filas activas sin romper
+  // (.single() devolvía error/null si había !=1 fila).
+  const { data, error } = await supabase
     .from("conversation_state")
     .select("*")
     .eq("user_id", userId)
     .eq("country_code", countryCode)
     .eq("status", "active")
-    .single();
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) console.error(`⚠️  getActiveState [${userId}/${countryCode}]:`, error.message);
   return data || null;
 }
 
 async function upsertState(userId, countryCode, flowId, flowType, currentStep, totalSteps, status = "active") {
-  await supabase
+  const { error: cancelErr } = await supabase
     .from("conversation_state")
     .update({ status: "cancelled", updated_at: new Date().toISOString() })
     .eq("user_id", userId)
     .eq("country_code", countryCode)
     .eq("status", "active");
+  if (cancelErr) console.error(`⚠️  upsertState(cancel) [${userId}/${countryCode}]:`, cancelErr.message);
 
   if (status === "cancelled") return;
 
-  await supabase.from("conversation_state").insert({
+  const { error: insertErr } = await supabase.from("conversation_state").insert({
     user_id: userId,
     country_code: countryCode,
     flow_id: flowId,
@@ -319,13 +329,17 @@ async function upsertState(userId, countryCode, flowId, flowType, currentStep, t
     status,
     updated_at: new Date().toISOString(),
   });
+  // Si esto falla (p. ej. RLS sin policy / clave sin permisos), el flujo NO
+  // se persiste y la continuación ("sí") no avanzará. Hay que verlo en logs.
+  if (insertErr) console.error(`❌ upsertState(insert) [${userId}/${countryCode}] flow=${flowId}:`, insertErr.message);
 }
 
 async function updateStep(stateId, currentStep, status = "active") {
-  await supabase
+  const { error } = await supabase
     .from("conversation_state")
     .update({ current_step: currentStep, status, updated_at: new Date().toISOString() })
     .eq("id", stateId);
+  if (error) console.error(`❌ updateStep [${stateId}] → paso ${currentStep}/${status}:`, error.message);
 }
 
 // ── Historial reciente ────────────────────────────────────────
@@ -532,9 +546,13 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
     ]);
 
     const allSteps = stepsResult.data || [];
+    const lastStepNumber = allSteps.length
+      ? Math.max(...allSteps.map(s => s.step_number))
+      : state.total_steps;
     const currentStep = allSteps.find(s => s.step_number === state.current_step);
     const nextStep = allSteps.find(s => s.step_number === state.current_step + 1);
-    const isLastStep = state.current_step >= state.total_steps;
+    const followingStep = nextStep || allSteps.find(s => s.step_number > state.current_step);
+    const isLastStep = state.current_step >= lastStepNumber;
 
     if (!currentStep) {
       await updateStep(state.id, state.current_step, "completed");
@@ -544,7 +562,26 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
     // Resumen de todos los pasos + detalle completo solo del actual y el siguiente
     const stepsOverview = allSteps.map(s => `[${s.step_number}] ${s.step_summary}`).join("\n");
     const currentContent = currentStep.step_detail || currentStep.step_summary;
-    const nextContent   = nextStep ? (nextStep.step_detail || nextStep.step_summary) : null;
+    const nextContent = followingStep ? (followingStep.step_detail || followingStep.step_summary) : null;
+
+    if (isContinuationMessage(question) && followingStep) {
+      const nextNumber = followingStep.step_number;
+      const response = await presentStepWithLLM(nextContent, {
+        isDetail: false,
+        isLastStep: nextNumber >= lastStepNumber,
+        question,
+        history,
+        orgName,
+        countryCode,
+        allSteps,
+        currentStepNumber: nextNumber,
+      });
+      await updateStep(state.id, nextNumber, nextNumber >= lastStepNumber ? "completed" : "active");
+      return {
+        response,
+        metadata: { flow_type: "paso_a_paso", step: nextNumber, deterministic_continuation: true },
+      };
+    }
 
     const systemContext = `Organización: ${orgName}. País: ${countryCode}.
 Estás orientando al usuario en un proceso de ${state.total_steps} pasos por WhatsApp. Va en el paso ${state.current_step}.
@@ -555,7 +592,7 @@ ${stepsOverview}
 CONTENIDO DEL PASO ACTUAL (${state.current_step}) — fuente Excel:
 ${currentContent}
 
-${nextContent ? `CONTENIDO DEL SIGUIENTE PASO (${state.current_step + 1}) — lo mostrarás solo si el usuario confirma:\n${nextContent}` : "ESTE ES EL ÚLTIMO PASO."}
+${nextContent ? `CONTENIDO DEL SIGUIENTE PASO (${followingStep.step_number}) — lo mostrarás solo si el usuario confirma:\n${nextContent}` : "ESTE ES EL ÚLTIMO PASO."}
 
 LÓGICA DE RESPUESTA:
 1. Si el usuario dice "sí", "si", "siguiente", "continúa", "continua", "luego", "luego qué hago", "dime más", "paso ${state.current_step + 1}" u otra señal de querer continuar → mostrar el Paso ${state.current_step + 1} (accion: "siguiente")
@@ -910,7 +947,7 @@ async function askAI(userId, countryCode, question) {
             console.log(`⏰ Flujo expirado (>30 min): ${activeState.flow_id} — cancelando`);
             await updateStep(activeState.id, activeState.current_step, "cancelled");
 
-          } else if (CONTINUATION_REGEX.test(question.trim())) {
+          } else if (isContinuationMessage(question)) {
             // Señal de continuación explícita → seguir el paso actual sin retrieval
             console.log(`▶️ Continuación del flujo: ${activeState.flow_id} paso ${activeState.current_step}/${activeState.total_steps}`);
             const result = await handlePasoAPaso(userId, countryCode, question, activeState);
