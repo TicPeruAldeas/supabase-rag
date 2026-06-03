@@ -418,67 +418,9 @@ async function searchFlow(countryCode, question) {
   });
 }
 
-// ── Búsqueda semántica (PDF) ──────────────────────────────────
-async function searchSemantic(countryCode, question, matchCount = 5) {
-  return startActiveObservation("search-semantic", async (obs) => {
-    obs.update({ input: question });
-    const queryEmbedding = await embedText(question);
-
-    const results = await startActiveObservation("supabase-match-knowledge", async (dbObs) => {
-      dbObs.update({ input: { country: countryCode, matchCount } });
-      const { data, error } = await supabase.rpc("match_knowledge_by_country", {
-        query_embedding: queryEmbedding,
-        filter_country: countryCode,
-        match_count: matchCount,
-      });
-      if (error) {
-        dbObs.update({ output: { error: error.message } });
-        return [];
-      }
-      const res = (data || []).filter(item => item.similarity >= 0.25);
-      dbObs.update({ output: { count: res.length } });
-      return res;
-    });
-
-    obs.update({ output: { count: results.length } });
-    return results;
-  });
-}
-
-// ── Búsqueda keyword ──────────────────────────────────────────
-async function searchFast(countryCode, question, limit = 3) {
-  const keywords = question.split(/\s+/).filter(w => w.length > 4).slice(0, 3);
-  if (keywords.length === 0) return [];
-  const keyword = keywords.sort((a, b) => b.length - a.length)[0];
-
-  return startActiveObservation("search-keyword", async (obs) => {
-    obs.update({ input: { keyword, country: countryCode } });
-    const { data, error } = await supabase
-      .from("knowledge_chunks")
-      .select("chunk_text, source_name")
-      .ilike("chunk_text", `%${keyword}%`)
-      .eq("country_code", countryCode)
-      .limit(limit);
-    const results = error ? [] : (data || []);
-    obs.update({ output: { count: results.length, keyword } });
-    return results;
-  });
-}
-
-function mergeResults(semanticResults, fastResults) {
-  const seen = new Set();
-  const merged = [];
-  for (const item of [...semanticResults, ...fastResults]) {
-    const key = item.chunk_text?.slice(0, 80);
-    if (key && !seen.has(key)) { seen.add(key); merged.push(item); }
-  }
-  return merged.slice(0, 6);
-}
-
-// ── Presentar un paso con LLM ────────────────────────────────
-// Presentación inicial (currentStepNumber=1, allSteps disponible):
-//   lista todos los pasos con títulos breves + desarrolla solo el paso 1.
-// Presentaciones siguientes o detalle: indicar "Paso N:" explícitamente.
+// Presentar un paso con LLM.
+// Presentacion inicial: lista pasos breves y desarrolla solo el paso actual.
+// Presentaciones siguientes o detalle: indicar "Paso N:" explicitamente.
 async function presentStepWithLLM(stepContent, { isDetail, isLastStep, question, history, orgName, countryCode, allSteps, currentStepNumber }) {
   return startActiveObservation("claude-step-response", async (obs) => {
     obs.update({ input: { isDetail, isLastStep, currentStepNumber } });
@@ -1065,141 +1007,46 @@ async function askAI(userId, countryCode, question) {
           }
         }
 
-        // 5. FALLBACK — búsqueda híbrida + Claude
-        // search-hybrid agrupa semántica, keyword y la generación de Claude
-        const hybridResult = await startActiveObservation("search-hybrid", async (hybridObs) => {
-          hybridObs.update({ input: question });
-
-          // searchSemantic y searchFast son hijos automáticos via OTel context
-          // history ya fue obtenido antes del paso 4 (scope externo)
-          const [semanticData, fastData] = await Promise.all([
-            searchSemantic(countryCode, question, 5),
-            searchFast(countryCode, question, 3),
-          ]);
-
-          const allResults = mergeResults(semanticData, fastData);
-
-          if (allResults.length === 0) {
-            hybridObs.update({ output: { count: 0 } });
-
-            // Sin contexto en la BD — Claude usa el historial + conocimiento general
-            // de la organización para responder con empatía sin inventar datos
-            const noCtxResponse = await startActiveObservation("claude-no-context", async (noCtxObs) => {
-              noCtxObs.update({ input: question });
-              const noCtxMsg = await anthropic.messages.create({
-                model: CLAUDE_MODEL,
-                max_tokens: 200,
-                system: [
-                  { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-                  {
-                    type: "text",
-                    text: `Organización activa: ${orgName}. País: ${countryCode}. No hay información específica disponible en la base de conocimiento para esta consulta. Usa el historial de la conversación (si lo hay) y tu conocimiento general sobre ${orgName} para responder de forma cálida y empática. Reconoce el tema que pregunta el usuario, indica honestamente que no cuentas con esa información específica en este momento, y recomiéndale contactar directamente a ${orgName}. Nunca inventes datos, nombres, montos ni procedimientos concretos.`,
-                  },
-                ],
-                messages: [...history, { role: "user", content: question }],
-              });
-              const resp = noCtxMsg.content[0]?.text
-                || `Lo siento, no tengo esa información en este momento. Te recomiendo contactar directamente a ${orgName} para que te orienten mejor.`;
-              noCtxObs.update({
-                output: resp,
-                model: CLAUDE_MODEL,
-                usageDetails: {
-                  input: noCtxMsg.usage.input_tokens,
-                  output: noCtxMsg.usage.output_tokens,
-                  cache_read: noCtxMsg.usage.cache_read_input_tokens ?? 0,
-                  cache_creation: noCtxMsg.usage.cache_creation_input_tokens ?? 0,
-                },
-              });
-              return resp;
-            }, { asType: "generation" });
-
-            return { response: noCtxResponse, searchType: "no_results_llm", context: null };
-          }
-
-          hybridObs.update({
-            output: { semantic: semanticData.length, keyword: fastData.length, merged: allResults.length },
-          });
-
-          const context = allResults
-            .map((item, i) => `Fuente ${i + 1}${item.source_name ? ` (${item.source_name})` : ""}:\n${item.chunk_text}`)
-            .join("\n\n");
-
-          // El contexto recuperado va en el mensaje del usuario para que varíe por pregunta
-          const userContent = `Contexto:\n${context}\n\nPregunta: ${question}`.trim();
-          const messages = [...history, { role: "user", content: userContent }];
-
-          const llmStart = Date.now();
-
-          // claude-rag-response es hijo de search-hybrid via OTel context
-          // Sistema en dos bloques:
-          //   Bloque 1 — STATIC_SYSTEM_PROMPT (≥2048 tokens, cache_control): cached en Anthropic
-          //   Bloque 2 — Nombre de organización + país (dinámico): siempre fresco
-          const finalResponse = await startActiveObservation("claude-rag-response", async (ragObs) => {
-            ragObs.update({ input: messages, model: CLAUDE_MODEL });
-
-            const stream = anthropic.messages.stream({
-              model: CLAUDE_MODEL,
-              max_tokens: 300,
-              system: [
-                {
-                  type: "text",
-                  text: STATIC_SYSTEM_PROMPT,
-                  cache_control: { type: "ephemeral" },
-                },
-                {
-                  type: "text",
-                  text: `Organización activa: ${orgName}. País: ${countryCode}. Responde según el contexto de esta organización en este país.`,
-                },
-              ],
-              messages,
-            });
-            const claudeResponse = await stream.finalMessage();
-
-            const resp = claudeResponse.content[0]?.text
-              || `Lo siento, no tengo esa información en este momento. Te recomiendo contactar directamente a ${orgName} para que te orienten mejor.`;
-
-            const cacheRead = claudeResponse.usage.cache_read_input_tokens ?? 0;
-            const cacheCreation = claudeResponse.usage.cache_creation_input_tokens ?? 0;
-            if (cacheRead > 0) {
-              console.log(`💾 Cache hit RAG [${countryCode}]: ${cacheRead} tokens (~${Math.round(cacheRead * 0.9)} ahorrados)`);
-            }
-
-            ragObs.update({
-              output: resp,
-              usageDetails: {
-                input: claudeResponse.usage.input_tokens,
-                output: claudeResponse.usage.output_tokens,
-                cache_read: cacheRead,
-                cache_creation: cacheCreation,
+        // 5. FALLBACK - solo Excel: si no hubo flow, no hay contexto especifico
+        const noCtxResponse = await startActiveObservation("claude-no-context", async (noCtxObs) => {
+          noCtxObs.update({ input: question });
+          const noCtxMsg = await anthropic.messages.create({
+            model: CLAUDE_MODEL,
+            max_tokens: 200,
+            system: [
+              { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+              {
+                type: "text",
+                text: `Organizacion activa: ${orgName}. Pais: ${countryCode}. No hay informacion especifica disponible en el Excel para esta consulta. Usa el historial de la conversacion (si lo hay) para responder de forma calida y empatica. Reconoce el tema que pregunta el usuario, indica honestamente que no cuentas con esa informacion especifica en este momento, y recomiendale contactar directamente a ${orgName}. Nunca inventes datos, nombres, montos ni procedimientos concretos.`,
               },
-            });
-            return resp;
-          }, { asType: "generation" });
-
-          return { response: finalResponse, searchType: "hybrid", context, llm_ms: Date.now() - llmStart };
-        });
-
-        // Fire-and-forget: evaluación LLM-as-Judge en background.
-        // traceId capturado antes — el span puede haber cerrado ya en este punto.
-        if (hybridResult.context && langfuseClient) {
-          evaluateResponse(traceId, question, hybridResult.context, hybridResult.response);
-        }
-
-        if (hybridResult.searchType === "hybrid" && !hybridResult.response.includes("Lo siento")) {
-          setCached(countryCode, question, hybridResult.response);
-        }
+            ],
+            messages: [...history, { role: "user", content: question }],
+          });
+          const resp = noCtxMsg.content[0]?.text
+            || `Lo siento, no tengo esa informacion en este momento. Te recomiendo contactar directamente a ${orgName} para que te orienten mejor.`;
+          noCtxObs.update({
+            output: resp,
+            model: CLAUDE_MODEL,
+            usageDetails: {
+              input: noCtxMsg.usage.input_tokens,
+              output: noCtxMsg.usage.output_tokens,
+              cache_read: noCtxMsg.usage.cache_read_input_tokens ?? 0,
+              cache_creation: noCtxMsg.usage.cache_creation_input_tokens ?? 0,
+            },
+          });
+          return resp;
+        }, { asType: "generation" });
 
         rootObs.update({
-          output: hybridResult.response,
-          metadata: { search_type: hybridResult.searchType },
+          output: noCtxResponse,
+          metadata: { search_type: "no_excel_match" },
         });
 
         return {
-          response: hybridResult.response,
+          response: noCtxResponse,
           metadata: {
-            search_type: hybridResult.searchType,
+            search_type: "no_excel_match",
             total_ms: Date.now() - totalStart,
-            ...(hybridResult.llm_ms ? { llm_ms: hybridResult.llm_ms } : {}),
           },
         };
       })

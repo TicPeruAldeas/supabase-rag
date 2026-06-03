@@ -257,19 +257,6 @@ app.post("/ingest-row", async (req, res) => {
 
     if (flowError) throw new Error(flowError.message);
 
-    // Upsert en knowledge_chunks con el mismo embedding
-    const chunkContent = Pregunta + ' ' + Respuesta;
-    const { error: chunkError } = await supabase.from('knowledge_chunks').upsert({
-      flow_id: ID,
-      country_code: rowCountryCode,
-      source_name: ID,
-      chunk_text: chunkContent,
-      embedding: embedding,
-      metadata: { categoria: Categoria, subtema: Subtema, tipo: Tipo },
-    }, { onConflict: 'flow_id,country_code' });
-    if (chunkError) throw new Error(chunkError.message);
-    console.log('Chunk guardado: ' + ID);
-
     // Si es paso a paso, procesar pasos con resumen de Claude
     if (flowType === "paso a paso" || flowType === "paso_a_paso") {
       const lines = Respuesta.split("\n").map(l => l.trim()).filter(Boolean);
