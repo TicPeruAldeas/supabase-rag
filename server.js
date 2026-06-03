@@ -70,6 +70,13 @@ const configuredCountries = [...new Set(Object.values(COUNTRY_MAP).map(c => c.co
 console.log(`🌎 Países configurados: ${configuredCountries.join(", ")}`);
 
 const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
+const ASK_SECRET = process.env.ASK_SECRET || process.env.INGEST_SECRET;
+
+function hasBearerSecret(req, secret) {
+  const authHeader = req.headers["authorization"];
+  const apiKey = req.headers["x-api-key"];
+  return authHeader === `Bearer ${secret}` || apiKey === secret;
+}
 
 // ── Enviar mensaje por WhatsApp (usa credenciales del país) ───
 async function sendWhatsAppMessage(to, message, phoneNumberId, token) {
@@ -170,6 +177,10 @@ app.post("/webhook", async (req, res) => {
 
 // ── Endpoint REST para testing / ChatFuel ─────────────────────
 app.post("/ask", async (req, res) => {
+  if (!hasBearerSecret(req, ASK_SECRET)) {
+    return res.status(401).json({ error: "No autorizado" });
+  }
+
   try {
     const { question, country_code, user_id, source } = req.body;
 
@@ -242,7 +253,7 @@ app.post("/ingest-row", async (req, res) => {
         embedding,
         source_name: "google_sheets",
         updated_at: new Date().toISOString(),
-      }, { onConflict: "flow_id" });
+      }, { onConflict: "flow_id,country_code" });
 
     if (flowError) throw new Error(flowError.message);
 
@@ -250,12 +261,12 @@ app.post("/ingest-row", async (req, res) => {
     const chunkContent = Pregunta + ' ' + Respuesta;
     const { error: chunkError } = await supabase.from('knowledge_chunks').upsert({
       flow_id: ID,
-      country_code: country_code || 'PE',
+      country_code: rowCountryCode,
       source_name: ID,
       chunk_text: chunkContent,
       embedding: embedding,
       metadata: { categoria: Categoria, subtema: Subtema, tipo: Tipo },
-    }, { onConflict: 'flow_id' });
+    }, { onConflict: 'flow_id,country_code' });
     if (chunkError) throw new Error(chunkError.message);
     console.log('Chunk guardado: ' + ID);
 
@@ -277,7 +288,11 @@ app.post("/ingest-row", async (req, res) => {
       if (currentStep) steps.push(currentStep);
 
       if (steps.length > 0) {
-        await supabase.from("knowledge_steps").delete().eq("flow_id", ID);
+        await supabase
+          .from("knowledge_steps")
+          .delete()
+          .eq("flow_id", ID)
+          .eq("country_code", rowCountryCode);
 
         for (const step of steps) {
           const summaryResponse = await anthropic.messages.create({
@@ -290,7 +305,7 @@ app.post("/ingest-row", async (req, res) => {
             }],
           });
 
-          await supabase.from("knowledge_steps").insert({
+          await supabase.from("knowledge_steps").upsert({
             flow_id: ID,
             step_number: step.number,
             step_summary: summaryResponse.content[0].text.trim(),
@@ -298,7 +313,7 @@ app.post("/ingest-row", async (req, res) => {
             country_code: rowCountryCode,
             source_name: "google_sheets",
             updated_at: new Date().toISOString(),
-          });
+          }, { onConflict: "flow_id,country_code,step_number" });
         }
       }
     }

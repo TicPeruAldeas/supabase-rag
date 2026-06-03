@@ -335,7 +335,11 @@ async function updateStep(stateId, currentStep, status = "active") {
 const HISTORY_EXPIRY_MS    = 24 * 60 * 60 * 1000; // 24 horas
 const ACTIVE_FLOW_TIMEOUT_MS = 30 * 60 * 1000;      // 30 minutos sin interacción cierra el flujo
 
-async function getRecentHistory(userId, countryCode, limit = 10) {
+function normalizeMessageText(text) {
+  return String(text || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+async function getRecentHistory(userId, countryCode, limit = 10, excludeLatestUserText = null) {
   const { data, error } = await supabase
     .from("conversations")
     .select("role, message, created_at")
@@ -356,6 +360,16 @@ async function getRecentHistory(userId, countryCode, limit = 10) {
   }
 
   const messages = data.reverse().map(item => ({ role: item.role, content: item.message }));
+  const excludedText = normalizeMessageText(excludeLatestUserText);
+
+  if (
+    excludedText &&
+    messages.length > 0 &&
+    messages[messages.length - 1].role === "user" &&
+    normalizeMessageText(messages[messages.length - 1].content) === excludedText
+  ) {
+    messages.pop();
+  }
 
   // La API de Claude requiere que los mensajes alternen user/assistant.
   // Si por algún desfase el primer mensaje fuera del asistente, lo descartamos.
@@ -566,11 +580,12 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
 
     // Historial y pasos en paralelo
     const [history, stepsResult] = await Promise.all([
-      getRecentHistory(userId, countryCode, 10),
+      getRecentHistory(userId, countryCode, 10, question),
       supabase
         .from("knowledge_steps")
         .select("step_number, step_summary, step_detail")
         .eq("flow_id", state.flow_id)
+        .eq("country_code", countryCode)
         .order("step_number", { ascending: true }),
     ]);
 
@@ -789,6 +804,7 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode,
       .from("knowledge_steps")
       .select("step_number, step_summary")
       .eq("flow_id", flow.flow_id)
+      .eq("country_code", countryCode)
       .order("step_number", { ascending: true });
 
     const steps = (kSteps && kSteps.length > 0)
@@ -1000,7 +1016,7 @@ async function askAI(userId, countryCode, question) {
         }
 
         // Historial disponible para todos los paths a partir de aquí
-        const history = await getRecentHistory(userId, countryCode, 10);
+        const history = await getRecentHistory(userId, countryCode, 10, question);
 
         // 3.5 MENSAJE VAGO — pedir clarificación antes de buscar
         if (VAGUE_REGEX.test(question.trim())) {
@@ -1030,6 +1046,7 @@ async function askAI(userId, countryCode, question) {
               .from("knowledge_steps")
               .select("step_number, step_summary")
               .eq("flow_id", flow.flow_id)
+              .eq("country_code", countryCode)
               .order("step_number", { ascending: true });
 
             if (!steps || steps.length === 0) {

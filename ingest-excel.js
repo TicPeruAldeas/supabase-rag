@@ -96,7 +96,7 @@ async function processRow(row) {
       embedding,
       source_name: "excel",
       updated_at: new Date().toISOString(),
-    }, { onConflict: "flow_id" });
+    }, { onConflict: "flow_id,country_code" });
 
   if (flowError) {
     console.error(`❌ Error guardando flow ${flowId}:`, flowError.message);
@@ -120,7 +120,8 @@ async function processRow(row) {
     await supabase
       .from("knowledge_steps")
       .delete()
-      .eq("flow_id", flowId);
+      .eq("flow_id", flowId)
+      .eq("country_code", COUNTRY_CODE);
 
     // Insertar pasos nuevos con resumen IA
     for (const step of steps) {
@@ -136,7 +137,7 @@ async function processRow(row) {
           country_code: COUNTRY_CODE,
           source_name: "excel",
           updated_at: new Date().toISOString(),
-        }, { onConflict: "flow_id, step_number" });
+        }, { onConflict: "flow_id,country_code,step_number" });
 
       if (stepError) {
         console.error(`❌ Error guardando paso ${step.number}:`, stepError.message);
