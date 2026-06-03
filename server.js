@@ -72,6 +72,29 @@ console.log(`🌎 Países configurados: ${configuredCountries.join(", ")}`);
 const WHATSAPP_VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 const ASK_SECRET = process.env.ASK_SECRET || process.env.INGEST_SECRET;
 
+// ── Dedup de reintentos de Meta ───────────────────────────────
+// Meta reenvía el mismo mensaje si el webhook tarda en responder. Recordamos
+// los wa_message_id recientes para no procesar (ni responder) dos veces.
+const seenMessageIds = new Map(); // wa_message_id → timestamp
+const MESSAGE_DEDUP_TTL_MS = 5 * 60 * 1000;
+
+function alreadyProcessed(messageId) {
+  if (!messageId) return false;
+  const now = Date.now();
+
+  if (seenMessageIds.size > 1000) {
+    for (const [id, ts] of seenMessageIds) {
+      if (now - ts > MESSAGE_DEDUP_TTL_MS) seenMessageIds.delete(id);
+    }
+  }
+
+  const seen = seenMessageIds.get(messageId);
+  if (seen && now - seen < MESSAGE_DEDUP_TTL_MS) return true;
+
+  seenMessageIds.set(messageId, now);
+  return false;
+}
+
 function hasBearerSecret(req, secret) {
   const authHeader = req.headers["authorization"];
   const apiKey = req.headers["x-api-key"];
@@ -136,6 +159,12 @@ app.post("/webhook", async (req, res) => {
     const text = message.text?.body;
 
     if (!text) return;
+
+    // Ignora reintentos de Meta del mismo mensaje
+    if (alreadyProcessed(message.id)) {
+      console.log(`⏭️  Mensaje duplicado ignorado: ${message.id}`);
+      return;
+    }
 
     console.log(`📩 [${countryCode}] ${from}: ${text}`);
 

@@ -950,8 +950,8 @@ async function askAI(userId, countryCode, question) {
           return { response, metadata: { search_type: "small_talk", total_ms: Date.now() - totalStart } };
         }
 
-        // 3. CACHE
-        const cached = getCached(countryCode, question);
+        // 3. CACHE (por usuario — la respuesta puede contener datos personales)
+        const cached = getCached(countryCode, userId, question);
         if (cached) {
           rootObs.update({ output: cached, metadata: { search_type: "cache" } });
           return { response: cached, metadata: { search_type: "cache", total_ms: Date.now() - totalStart } };
@@ -978,7 +978,9 @@ async function askAI(userId, countryCode, question) {
           if (normalizedType === "informativa" || normalizedType === "seleccion") {
             const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode, userId);
             const searchType = normalizedType === "informativa" ? "flow_informativa" : "flow_seleccion";
-            setCached(countryCode, question, response);
+            setCached(countryCode, userId, question, response);
+            // LLM-as-Judge fire-and-forget — no bloquea la respuesta al usuario
+            evaluateResponse(traceId, question, flow.answer, response).catch((e) => console.error("LLM-Judge:", e.message));
             rootObs.update({ output: response, metadata: { search_type: searchType, flow_id: flow.flow_id, tipo_respuesta: flow.tipo_respuesta ?? normalizedType } });
             return { response, metadata: { search_type: searchType, flow_id: flow.flow_id, total_ms: Date.now() - totalStart } };
           }
@@ -1036,6 +1038,9 @@ async function askAI(userId, countryCode, question) {
           });
           return resp;
         }, { asType: "generation" });
+
+        // LLM-as-Judge fire-and-forget — sin contexto de BD para esta consulta
+        evaluateResponse(traceId, question, "", noCtxResponse).catch((e) => console.error("LLM-Judge:", e.message));
 
         rootObs.update({
           output: noCtxResponse,

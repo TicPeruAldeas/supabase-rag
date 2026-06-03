@@ -1,10 +1,11 @@
 {
   "name": "supabase-rag",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "RAG multi-país por WhatsApp para Aldeas Infantiles SOS",
+  "main": "server.js",
   "scripts": {
-    "test": "node --check server.js && node --check rag-service.js && node --check ingest-excel.js && node --check ask-ai.js && node --check test-query.js"
+    "start": "node server.js",
+    "test": "node --check server.js && node --check rag-service.js && node --check ingest-excel.js && node --check ask-ai.js && node --check test-query.js && node --check cache.js"
   },
   "keywords": [],
   "author": "",
