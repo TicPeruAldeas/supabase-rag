@@ -1071,7 +1071,7 @@ async function askAI(userId, countryCode, question) {
           const normalizedType = flow.flow_type?.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 
           if (normalizedType === "informativa" || normalizedType === "seleccion") {
-            const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode, userId);
+            const response = guardGroundedContactInfo(flow.answer, flow.answer, orgName);
             const searchType = normalizedType === "informativa" ? "flow_informativa" : "flow_seleccion";
             setCached(countryCode, userId, question, response);
             // LLM-as-Judge fire-and-forget — no bloquea la respuesta al usuario
