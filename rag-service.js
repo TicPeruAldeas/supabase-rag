@@ -257,7 +257,10 @@ REGLA D — RESPUESTAS BREVES PARA WHATSAPP
 Una sola idea principal por mensaje. Terminar con una sola pregunta concreta cuando sea necesario continuar. Evitar bloques de texto largos.
 
 REGLA E — EL FLOW ES LA FUENTE DE VERDAD
-La respuesta final debe estar basada en el campo "Respuesta" del flow recuperado. No usar conocimiento externo para completar información. No agregar recomendaciones legales, migratorias, médicas o institucionales que no estén en el flow.`;
+La respuesta final debe estar basada en el campo "Respuesta" del flow recuperado. No usar conocimiento externo para completar información. No agregar recomendaciones legales, migratorias, médicas o institucionales que no estén en el flow.
+
+REGLA F — CONTACTOS VERIFICABLES
+Nunca menciones teléfonos, correos, URLs, direcciones, sedes, líneas gratuitas ni nombres de canales específicos si no aparecen literalmente en el flow recuperado. Si no hay un contacto concreto en el Excel, usa solo "canales oficiales" sin inventar datos.`;
 
 // Solo saludos reales. Confirmaciones cortas (sí, ok, listo...) se eliminaron
 // para que nunca disparen el saludo si hay contexto activo o reciente.
@@ -269,6 +272,34 @@ const CONTINUATION_REGEX = /^(sí|si|no|listo|ok|okay|ya|correcto|entendido|no\s
 
 function isContinuationMessage(question) {
   return CONTINUATION_REGEX.test((question || "").trim());
+}
+
+const CONTACT_TOKEN_REGEX = /([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|https?:\/\/\S+|www\.\S+|\b(?:\+?\d[\d\s().-]{6,}\d)\b)/gi;
+
+function normalizeContactToken(value) {
+  return String(value || "").toLowerCase().replace(/[\s().-]+/g, "");
+}
+
+function hasUnsupportedContactInfo(response, sourceText) {
+  const tokens = String(response || "").match(CONTACT_TOKEN_REGEX) || [];
+  if (tokens.length === 0) return false;
+
+  const source = String(sourceText || "").toLowerCase();
+  const normalizedSource = normalizeContactToken(sourceText);
+
+  return tokens.some((token) => {
+    const lowerToken = token.toLowerCase();
+    if (lowerToken.includes("@") || lowerToken.startsWith("http") || lowerToken.startsWith("www.")) {
+      return !source.includes(lowerToken);
+    }
+    return !normalizedSource.includes(normalizeContactToken(token));
+  });
+}
+
+function guardGroundedContactInfo(response, sourceText, orgName) {
+  if (!hasUnsupportedContactInfo(response, sourceText)) return response;
+  console.warn("⚠️ Respuesta con contacto no presente en Excel; usando fallback seguro.");
+  return `Gracias por contarme. En este momento no tengo un contacto especifico en la informacion disponible. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
 }
 
 // Mensajes vagos que necesitan una pregunta de clarificación antes de buscar
@@ -537,7 +568,7 @@ REGLAS:
       messages: [...history, { role: "user", content: userTask }],
     });
 
-    const resp = msg.content[0]?.text || stepContent;
+    const resp = guardGroundedContactInfo(msg.content[0]?.text || stepContent, stepContent, orgName);
     obs.update({
       output: resp,
       model: CLAUDE_MODEL,
@@ -847,7 +878,7 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode,
         ],
         messages: [...history, { role: "user", content: question }],
       });
-      const resp = msg.content[0]?.text || flow.answer;
+      const resp = guardGroundedContactInfo(msg.content[0]?.text || flow.answer, flow.answer, orgName);
       obs.update({
         output: resp,
         model: CLAUDE_MODEL,
@@ -885,7 +916,7 @@ No inventes datos adicionales.${relevanceGuard}`;
       messages: [...history, { role: "user", content: userContent }],
     });
 
-    const resp = msg.content[0]?.text || flow.answer;
+    const resp = guardGroundedContactInfo(msg.content[0]?.text || flow.answer, flow.answer, orgName);
     const cacheRead = msg.usage.cache_read_input_tokens ?? 0;
     if (cacheRead > 0) console.log(`💾 Cache hit Flow [${countryCode}]: ${cacheRead} tokens`);
 
@@ -1073,38 +1104,9 @@ async function askAI(userId, countryCode, question) {
           }
         }
 
-        // 5. FALLBACK - solo Excel: si no hubo flow, no hay contexto especifico
-        const noCtxResponse = await startActiveObservation("claude-no-context", async (noCtxObs) => {
-          noCtxObs.update({ input: question });
-          const noCtxMsg = await anthropic.messages.create({
-            model: CLAUDE_MODEL,
-            max_tokens: 200,
-            system: [
-              { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-              {
-                type: "text",
-                text: `Organizacion activa: ${orgName}. Pais: ${countryCode}. No hay informacion especifica disponible en el Excel para esta consulta. Usa el historial de la conversacion (si lo hay) para responder de forma calida y empatica. Reconoce el tema que pregunta el usuario, indica honestamente que no cuentas con esa informacion especifica en este momento, y recomiendale contactar directamente a ${orgName}. Nunca inventes datos, nombres, montos ni procedimientos concretos.`,
-              },
-            ],
-            messages: [...history, { role: "user", content: question }],
-          });
-          const resp = noCtxMsg.content[0]?.text
-            || `Lo siento, no tengo esa informacion en este momento. Te recomiendo contactar directamente a ${orgName} para que te orienten mejor.`;
-          noCtxObs.update({
-            output: resp,
-            model: CLAUDE_MODEL,
-            usageDetails: {
-              input: noCtxMsg.usage.input_tokens,
-              output: noCtxMsg.usage.output_tokens,
-              cache_read: noCtxMsg.usage.cache_read_input_tokens ?? 0,
-              cache_creation: noCtxMsg.usage.cache_creation_input_tokens ?? 0,
-            },
-          });
-          return resp;
-        }, { asType: "generation" });
-
-        // LLM-as-Judge fire-and-forget — sin contexto de BD para esta consulta
-        evaluateResponse(traceId, question, "", noCtxResponse).catch((e) => console.error("LLM-Judge:", e.message));
+        // 5. FALLBACK - solo Excel: sin flow recuperado no se llama al LLM.
+        // Esto evita que el modelo invente telefonos, correos, sedes o links.
+        const noCtxResponse = `Gracias por contarme. En este momento no tengo informacion especifica en el Excel para orientarte sobre eso. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
 
         rootObs.update({
           output: noCtxResponse,
