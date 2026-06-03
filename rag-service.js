@@ -275,6 +275,8 @@ function isContinuationMessage(question) {
 }
 
 const CONTACT_TOKEN_REGEX = /([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|https?:\/\/\S+|www\.\S+|\b(?:\+?\d[\d\s().-]{6,}\d)\b)/gi;
+const SHORT_NUMBER_REGEX = /\b\d{2,6}\b/g;
+const INSTITUTION_KEYWORD_REGEX = /\b(polic[ií]a|municipalidad|comisar[ií]a|serenazgo|demuna|defensor[ií]a|ministerio|hospital|centro de salud|l[ií]nea gratuita)\b/i;
 
 function normalizeContactToken(value) {
   return String(value || "").toLowerCase().replace(/[\s().-]+/g, "");
@@ -282,24 +284,31 @@ function normalizeContactToken(value) {
 
 function hasUnsupportedContactInfo(response, sourceText) {
   const tokens = String(response || "").match(CONTACT_TOKEN_REGEX) || [];
-  if (tokens.length === 0) return false;
+  const shortNumbers = String(response || "").match(SHORT_NUMBER_REGEX) || [];
 
   const source = String(sourceText || "").toLowerCase();
   const normalizedSource = normalizeContactToken(sourceText);
 
-  return tokens.some((token) => {
+  const hasUnsupportedContact = tokens.some((token) => {
     const lowerToken = token.toLowerCase();
     if (lowerToken.includes("@") || lowerToken.startsWith("http") || lowerToken.startsWith("www.")) {
       return !source.includes(lowerToken);
     }
     return !normalizedSource.includes(normalizeContactToken(token));
   });
+
+  const hasUnsupportedShortNumber = shortNumbers.some((token) => !source.includes(token.toLowerCase()));
+  const hasUnsupportedInstitution = INSTITUTION_KEYWORD_REGEX.test(response || "")
+    && !INSTITUTION_KEYWORD_REGEX.test(sourceText || "");
+
+  return hasUnsupportedContact || hasUnsupportedShortNumber || hasUnsupportedInstitution;
 }
 
 function guardGroundedContactInfo(response, sourceText, orgName) {
   if (!hasUnsupportedContactInfo(response, sourceText)) return response;
   console.warn("⚠️ Respuesta con contacto no presente en Excel; usando fallback seguro.");
-  return `Gracias por contarme. En este momento no tengo un contacto especifico en la informacion disponible. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
+  return String(sourceText || "").trim()
+    || `Gracias por contarme. En este momento no tengo un contacto especifico en la informacion disponible. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
 }
 
 // Mensajes vagos que necesitan una pregunta de clarificación antes de buscar
@@ -859,79 +868,51 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode,
     }
   }
 
-  // NIVEL 3: con similarity >= 0.50 devuelve textual + relevanceGuard;
-  // con similarity < 0.50 el LLM evalúa si realmente aplica antes de responder
-  if (tipo === "seleccion") {
-    const highConfidence = (flow.similarity ?? 0) >= 0.50;
-    console.log(`📄 Flow NIVEL 3 (selección): ${flow.flow_id} sim=${flow.similarity?.toFixed(3)} highConfidence=${highConfidence}`);
-    return startActiveObservation("claude-flow-response", async (obs) => {
-      obs.update({ input: { question, tipo_respuesta: tipo, flow_id: flow.flow_id, similarity: flow.similarity } });
-      const block2Text = highConfidence
-        ? `Organización: ${orgName}. País: ${countryCode}.\nEvalúa si la siguiente información responde la pregunta del usuario.\n- Si SÍ es relevante: devuelve EXACTAMENTE este texto, sin ninguna modificación:\n${flow.answer}\n- Si NO es relevante: responde empáticamente indicando que aún no cuentas con esa información específica y sugiere contactar directamente a ${orgName}.`
-        : `Organización: ${orgName}. País: ${countryCode}.\nSe encontró información relacionada pero con baja confianza. Evalúa con criterio estricto si realmente responde la pregunta del usuario.\n- Si SÍ aplica claramente: devuelve EXACTAMENTE este texto sin ninguna modificación:\n${flow.answer}\n- Si NO aplica o hay dudas: responde empáticamente que aún no cuentas con esa información específica y sugiere contactar directamente a ${orgName}.`;
-      const msg = await anthropic.messages.create({
-        model: CLAUDE_MODEL,
-        max_tokens: 400,
-        system: [
-          { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-          { type: "text", text: block2Text },
-        ],
-        messages: [...history, { role: "user", content: question }],
-      });
-      const resp = guardGroundedContactInfo(msg.content[0]?.text || flow.answer, flow.answer, orgName);
-      obs.update({
-        output: resp,
-        model: CLAUDE_MODEL,
-        usageDetails: {
-          input: msg.usage.input_tokens,
-          output: msg.usage.output_tokens,
-          cache_read: msg.usage.cache_read_input_tokens ?? 0,
-          cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
-        },
-      });
-      return resp;
-    }, { asType: "generation" });
-  }
-
-  console.log(`🤖 Flow NIVEL 1 (informativa): ${flow.flow_id}`);
-
-  const relevanceGuard = `\nANTES DE RESPONDER: evalúa internamente si la información de la base de conocimiento realmente responde la pregunta del usuario. Si NO es relevante o no la cubre, responde empáticamente indicando que aún no cuentas con esa información específica y sugiere contactar directamente a ${orgName}. No fuerces una respuesta con información que no aplica.`;
-
-  const block2 = `Organización: ${orgName}. País: ${countryCode}.
-Eres un asistente empático que apoya a migrantes y familias vulnerables. Usa la información de la base de conocimiento como guía, pero responde de forma natural y adaptada exactamente a lo que preguntó el usuario. Tono cálido, humano y cercano.
-No inventes datos adicionales.${relevanceGuard}`;
-
-  const userContent = `Información de la base de conocimiento:\n${flow.answer}\n\nPregunta del usuario: ${question}`;
-
-  return startActiveObservation("claude-flow-response", async (obs) => {
+  return startActiveObservation("claude-flow-grounded-response", async (obs) => {
     obs.update({ input: { question, tipo_respuesta: tipo, flow_id: flow.flow_id } });
 
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
-      max_tokens: 300,
+      max_tokens: 260,
+      temperature: 0,
       system: [
-        { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-        { type: "text", text: block2 },
+        {
+          type: "text",
+          text: `Eres un asistente de WhatsApp. Reescribe la respuesta fuente de forma natural y empatica para responder al usuario.
+
+REGLAS ESTRICTAS:
+- Usa unicamente la informacion de RESPUESTA FUENTE.
+- No agregues instituciones, telefonos, numeros, correos, enlaces, ciudades, sedes, requisitos, beneficios ni canales que no aparezcan literalmente en RESPUESTA FUENTE.
+- Si la fuente pide un dato al usuario, conserva esa pregunta.
+- Maximo 4 lineas. Sin markdown ni listas.`,
+        },
       ],
-      messages: [...history, { role: "user", content: userContent }],
+      messages: [
+        {
+          role: "user",
+          content: `Pregunta del usuario:
+${question}
+
+RESPUESTA FUENTE:
+${flow.answer}`,
+        },
+      ],
     });
 
     const resp = guardGroundedContactInfo(msg.content[0]?.text || flow.answer, flow.answer, orgName);
-    const cacheRead = msg.usage.cache_read_input_tokens ?? 0;
-    if (cacheRead > 0) console.log(`💾 Cache hit Flow [${countryCode}]: ${cacheRead} tokens`);
-
     obs.update({
       output: resp,
       model: CLAUDE_MODEL,
       usageDetails: {
         input: msg.usage.input_tokens,
         output: msg.usage.output_tokens,
-        cache_read: cacheRead,
+        cache_read: msg.usage.cache_read_input_tokens ?? 0,
         cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
       },
     });
     return resp;
   }, { asType: "generation" });
+
 }
 
 // ── Clarificación inteligente ─────────────────────────────────
@@ -1071,7 +1052,7 @@ async function askAI(userId, countryCode, question) {
           const normalizedType = flow.flow_type?.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 
           if (normalizedType === "informativa" || normalizedType === "seleccion") {
-            const response = guardGroundedContactInfo(flow.answer, flow.answer, orgName);
+            const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode, userId);
             const searchType = normalizedType === "informativa" ? "flow_informativa" : "flow_seleccion";
             setCached(countryCode, userId, question, response);
             // LLM-as-Judge fire-and-forget — no bloquea la respuesta al usuario
