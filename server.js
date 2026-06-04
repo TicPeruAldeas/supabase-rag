@@ -181,7 +181,11 @@ app.post("/webhook", async (req, res) => {
       },
     }).catch((err) => console.error("Error guardando user:", err.message));
 
-    const result = await askAI(from, countryCode, text);
+    const result = await askAI(from, countryCode, text, {
+      source: "whatsapp",
+      waMessageId: message.id || null,
+      phoneNumberId: incomingPhoneNumberId,
+    });
 
     await sendWhatsAppMessage(from, result.response, phoneNumberId, token);
     console.log(`✅ [${countryCode}] ${from} → ${result.metadata?.search_type} ${result.metadata?.total_ms}ms`);
@@ -225,7 +229,9 @@ app.post("/ask", async (req, res) => {
       metadata: { event: "incoming_message" },
     }).catch((err) => console.error("Error guardando user:", err.message));
 
-    const result = await askAI(user_id, countryCode, question);
+    const result = await askAI(user_id, countryCode, question, {
+      source: inputSource,
+    });
 
     res.json({ response: result.response, debug: result.metadata || {} });
 

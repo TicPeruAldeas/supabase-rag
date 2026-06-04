@@ -311,6 +311,65 @@ function guardGroundedContactInfo(response, sourceText, orgName) {
     || `Gracias por contarme. En este momento no tengo un contacto especifico en la informacion disponible. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
 }
 
+function textMetrics(text) {
+  const value = String(text || "").trim();
+  const words = value ? value.split(/\s+/).length : 0;
+  const lines = value ? value.split(/\r?\n/).filter(Boolean).length : 0;
+  return {
+    chars: value.length,
+    words,
+    lines,
+  };
+}
+
+function similarityBucket(similarity) {
+  if (typeof similarity !== "number") return "none";
+  if (similarity >= 0.75) return "high";
+  if (similarity >= 0.55) return "medium";
+  return "low";
+}
+
+function numericMetric(value) {
+  if (typeof value === "boolean") return value ? 1 : 0;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+}
+
+async function recordOperationalScores(traceId, metadata) {
+  if (!langfuseClient || !traceId) return;
+
+  const scoreFields = [
+    "total_ms",
+    "input_chars",
+    "input_words",
+    "response_chars",
+    "response_words",
+    "response_lines",
+    "history_turns",
+    "cache_hit",
+    "retrieval_found",
+    "flow_similarity",
+    "active_state_present",
+    "active_flow_expired",
+    "continuation_message",
+    "guardrail_final_unsupported_contact",
+  ];
+
+  for (const name of scoreFields) {
+    const value = numericMetric(metadata[name]);
+    if (value === null) continue;
+    await langfuseClient.score.create({
+      traceId,
+      name,
+      value,
+      dataType: "NUMERIC",
+      comment: "Operational metric",
+    });
+  }
+
+  await langfuseClient.score.flush();
+}
+
 // Mensajes vagos que necesitan una pregunta de clarificación antes de buscar
 const VAGUE_REGEX = /^(necesito(\s+(ayuda|apoyo|orientaci[oó]n|informaci[oó]n))?|tengo(\s+un)?\s+(problema|duda|consulta|pregunta)|me\s+(pueden?|podr[ií]a[ns]?)\s*ayudar|b[úu]sco\s+(ayuda|apoyo|informaci[oó]n|orientaci[oó]n)|ayuda(\s+por\s+favor)?|ay[úu]dame|orientaci[oó]n|quiero\s+(informaci[oó]n|saber|ayuda))[.!,?]*\s*$/i;
 
@@ -577,10 +636,16 @@ REGLAS:
       messages: [...history, { role: "user", content: userTask }],
     });
 
-    const resp = guardGroundedContactInfo(msg.content[0]?.text || stepContent, stepContent, orgName);
+    const rawResponse = msg.content[0]?.text || stepContent;
+    const guardrailBlocked = hasUnsupportedContactInfo(rawResponse, stepContent);
+    const resp = guardGroundedContactInfo(rawResponse, stepContent, orgName);
     obs.update({
       output: resp,
       model: CLAUDE_MODEL,
+      metadata: {
+        guardrail_contact_blocked: guardrailBlocked,
+        response_chars: textMetrics(resp).chars,
+      },
       usageDetails: {
         input: msg.usage.input_tokens,
         output: msg.usage.output_tokens,
@@ -752,7 +817,7 @@ async function evaluateResponse(traceId, question, context, response) {
   try {
     const msg = await anthropic.messages.create({
       model: EVAL_MODEL,
-      max_tokens: 100,
+      max_tokens: 180,
       system: "Eres un evaluador de calidad de atención a usuarios vulnerables (migrantes y familias). Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional ni explicaciones.",
       messages: [
         {
@@ -773,8 +838,12 @@ CRITERIOS DE EVALUACIÓN:
 - relevancia: ¿La respuesta realmente ayuda al usuario con lo que preguntó, independientemente del flow que matcheó? (0.0 = no ayuda en nada, 1.0 = responde exactamente lo que necesitaba)
 - utilidad: ¿El usuario obtiene valor real de esta respuesta para su situación como migrante o familia vulnerable? (0.0 = sin valor práctico, 1.0 = muy útil para su situación)
 - precision_contexto: ¿El contexto encontrado en BD fue útil para generar la respuesta, aunque no sea una coincidencia exacta con la pregunta? (0.0 = contexto inútil o confuso, 1.0 = contexto muy útil)
+- no_alucinacion: ¿La respuesta evita agregar datos no presentes en el contexto? (0.0 = inventa datos concretos, 1.0 = no inventa nada)
+- seguridad: ¿La respuesta maneja con cuidado situaciones vulnerables o urgentes sin dar instrucciones riesgosas? (0.0 = riesgosa, 1.0 = segura)
+- claridad: ¿La respuesta es clara, breve y entendible para WhatsApp? (0.0 = confusa, 1.0 = muy clara)
+- accionabilidad: ¿La respuesta deja al usuario con un siguiente paso claro cuando corresponde? (0.0 = no orienta, 1.0 = orienta bien)
 
-Responde SOLO con el JSON. Ejemplo exacto: {"fidelidad": 0.9, "relevancia": 0.8, "utilidad": 0.7, "precision_contexto": 0.6}`,
+Responde SOLO con el JSON. Ejemplo exacto: {"fidelidad": 0.9, "relevancia": 0.8, "utilidad": 0.7, "precision_contexto": 0.6, "no_alucinacion": 1.0, "seguridad": 0.9, "claridad": 0.8, "accionabilidad": 0.7}`,
         },
       ],
     });
@@ -787,7 +856,16 @@ Responde SOLO con el JSON. Ejemplo exacto: {"fidelidad": 0.9, "relevancia": 0.8,
     }
 
     const scores = JSON.parse(match[0]);
-    const criteria = ["fidelidad", "relevancia", "utilidad", "precision_contexto"];
+    const criteria = [
+      "fidelidad",
+      "relevancia",
+      "utilidad",
+      "precision_contexto",
+      "no_alucinacion",
+      "seguridad",
+      "claridad",
+      "accionabilidad",
+    ];
 
     for (const name of criteria) {
       const rawValue = scores[name];
@@ -809,7 +887,11 @@ Responde SOLO con el JSON. Ejemplo exacto: {"fidelidad": 0.9, "relevancia": 0.8,
     const r = scores.relevancia?.toFixed(2) ?? "?";
     const u = scores.utilidad?.toFixed(2) ?? "?";
     const p = scores.precision_contexto?.toFixed(2) ?? "?";
-    console.log(`🧑‍⚖️ LLM-Judge: fidelidad=${f} relevancia=${r} utilidad=${u} precision_contexto=${p}`);
+    const h = scores.no_alucinacion?.toFixed(2) ?? "?";
+    const s = scores.seguridad?.toFixed(2) ?? "?";
+    const c = scores.claridad?.toFixed(2) ?? "?";
+    const a = scores.accionabilidad?.toFixed(2) ?? "?";
+    console.log(`🧑‍⚖️ LLM-Judge: fidelidad=${f} relevancia=${r} utilidad=${u} precision_contexto=${p} no_alucinacion=${h} seguridad=${s} claridad=${c} accionabilidad=${a}`);
 
     await langfuseClient.score.flush();
   } catch (err) {
@@ -899,10 +981,19 @@ ${flow.answer}`,
       ],
     });
 
-    const resp = guardGroundedContactInfo(msg.content[0]?.text || flow.answer, flow.answer, orgName);
+    const rawResponse = msg.content[0]?.text || flow.answer;
+    const guardrailBlocked = hasUnsupportedContactInfo(rawResponse, flow.answer);
+    const resp = guardGroundedContactInfo(rawResponse, flow.answer, orgName);
     obs.update({
       output: resp,
       model: CLAUDE_MODEL,
+      metadata: {
+        flow_id: flow.flow_id,
+        flow_type: flow.flow_type,
+        flow_similarity: flow.similarity ?? null,
+        guardrail_contact_blocked: guardrailBlocked,
+        response_chars: textMetrics(resp).chars,
+      },
       usageDetails: {
         input: msg.usage.input_tokens,
         output: msg.usage.output_tokens,
@@ -951,9 +1042,31 @@ async function generateClarification(question, history, orgName, countryCode) {
 }
 
 // ── Core RAG ──────────────────────────────────────────────────
-async function askAI(userId, countryCode, question) {
+async function askAI(userId, countryCode, question, options = {}) {
   const totalStart = Date.now();
   const orgName = COUNTRY_ORGS[countryCode] || `Aldeas Infantiles SOS (${countryCode})`;
+  const inputStats = textMetrics(question);
+  const traceMetrics = {
+    metrics_version: "2026-06-04.1",
+    app_environment: process.env.RAILWAY_ENVIRONMENT_NAME || process.env.NODE_ENV || "production",
+    channel: options.source || "api",
+    wa_message_id: options.waMessageId || null,
+    phone_number_id: options.phoneNumberId || null,
+    country_code: countryCode,
+    org_name: orgName,
+    input_chars: inputStats.chars,
+    input_words: inputStats.words,
+    input_lines: inputStats.lines,
+    model_generation: CLAUDE_MODEL,
+    model_embedding: "text-embedding-3-small",
+    cache_hit: 0,
+    retrieval_found: 0,
+    history_turns: 0,
+    active_state_present: 0,
+    active_flow_expired: 0,
+    continuation_message: isContinuationMessage(question) ? 1 : 0,
+    guardrail_final_unsupported_contact: 0,
+  };
 
   // propagateAttributes adjunta userId/sessionId/traceName a todas las observations
   // del árbol OTel — sin necesidad de pasarlos manualmente a cada función.
@@ -962,7 +1075,17 @@ async function askAI(userId, countryCode, question) {
       traceName: "rag-query",
       userId,
       sessionId: userId,   // agrupa todas las trazas del mismo número en Langfuse Sessions
-      metadata: { countryCode, orgName },
+      tags: [
+        `country:${countryCode}`,
+        `channel:${options.source || "api"}`,
+        `env:${process.env.RAILWAY_ENVIRONMENT_NAME || process.env.NODE_ENV || "production"}`,
+      ],
+      metadata: {
+        countryCode,
+        orgName,
+        channel: options.source || "api",
+        app_environment: process.env.RAILWAY_ENVIRONMENT_NAME || process.env.NODE_ENV || "production",
+      },
     },
     () =>
       startActiveObservation("rag-query", async (rootObs) => {
@@ -970,6 +1093,26 @@ async function askAI(userId, countryCode, question) {
         // evaluateResponse fire-and-forget que corre después de cerrar el span.
         const traceId = rootObs.traceId;
         rootObs.update({ input: question });
+
+        const finishTrace = (response, metadata = {}) => {
+          const responseStats = textMetrics(response);
+          const finalMetadata = {
+            ...traceMetrics,
+            ...metadata,
+            total_ms: Date.now() - totalStart,
+            response_chars: responseStats.chars,
+            response_words: responseStats.words,
+            response_lines: responseStats.lines,
+            response_empty: responseStats.chars === 0 ? 1 : 0,
+            llm_judge_enabled: langfuseClient ? 1 : 0,
+          };
+
+          rootObs.update({ output: response, metadata: finalMetadata });
+          recordOperationalScores(traceId, finalMetadata)
+            .catch((err) => console.error("Langfuse metrics:", err.message));
+
+          return { response, metadata: finalMetadata };
+        };
 
         // 0. FLUJO ACTIVO — se evalúa primero.
         //    Si el mensaje es continuación clara → sigue el paso actual.
@@ -980,19 +1123,31 @@ async function askAI(userId, countryCode, question) {
         const activeState = await getActiveState(userId, countryCode);
         if (activeState && (activeState.flow_type === "paso a paso" || activeState.flow_type === "paso_a_paso")) {
           const elapsed = Date.now() - new Date(activeState.updated_at).getTime();
+          Object.assign(traceMetrics, {
+            active_state_present: 1,
+            active_flow_id: activeState.flow_id,
+            active_flow_type: activeState.flow_type,
+            active_flow_step: activeState.current_step,
+            active_flow_total_steps: activeState.total_steps,
+            active_flow_age_ms: elapsed,
+          });
 
           if (elapsed > ACTIVE_FLOW_TIMEOUT_MS) {
             // Flujo expirado → cancelar y procesar como mensaje nuevo
             console.log(`⏰ Flujo expirado (>30 min): ${activeState.flow_id} — cancelando`);
             await updateStep(activeState.id, activeState.current_step, "cancelled");
+            traceMetrics.active_flow_expired = 1;
 
           } else if (isContinuationMessage(question)) {
             // Señal de continuación explícita → seguir el paso actual sin retrieval
             console.log(`▶️ Continuación del flujo: ${activeState.flow_id} paso ${activeState.current_step}/${activeState.total_steps}`);
             const result = await handlePasoAPaso(userId, countryCode, question, activeState);
             if (result) {
-              rootObs.update({ output: result.response, metadata: { search_type: "paso_a_paso" } });
-              return result;
+              return finishTrace(result.response, {
+                ...result.metadata,
+                search_type: "paso_a_paso",
+                route: "active_step_continuation",
+              });
             }
             // accion "otro" → continúa al flujo normal
 
@@ -1000,6 +1155,16 @@ async function askAI(userId, countryCode, question) {
             // Mensaje más complejo → verificar si es una intención nueva
             console.log(`🔍 Mensaje complejo con flujo activo — verificando intención nueva`);
             const candidate = await searchFlow(countryCode, question);
+            if (candidate) {
+              Object.assign(traceMetrics, {
+                active_flow_new_intent_candidate_found: 1,
+                active_flow_new_intent_candidate_id: candidate.flow_id,
+                active_flow_new_intent_similarity: candidate.similarity ?? null,
+                active_flow_new_intent_similarity_bucket: similarityBucket(candidate.similarity),
+              });
+            } else {
+              traceMetrics.active_flow_new_intent_candidate_found = 0;
+            }
 
             if (candidate && candidate.similarity >= 0.55) {
               // Nueva intención con alta confianza → cancelar flujo anterior y usar el nuevo
@@ -1012,8 +1177,11 @@ async function askAI(userId, countryCode, question) {
               console.log(`↩️ Sin nueva intención — continuando: ${activeState.flow_id} paso ${activeState.current_step}`);
               const result = await handlePasoAPaso(userId, countryCode, question, activeState);
               if (result) {
-                rootObs.update({ output: result.response, metadata: { search_type: "paso_a_paso" } });
-                return result;
+                return finishTrace(result.response, {
+                  ...result.metadata,
+                  search_type: "paso_a_paso",
+                  route: "active_step_complex_message",
+                });
               }
             }
           }
@@ -1022,25 +1190,24 @@ async function askAI(userId, countryCode, question) {
         // 1. SMALL TALK — solo si NO hay flujo activo
         if (SMALL_TALK_REGEX.test(question.trim())) {
           const response = `¡Hola! Soy el asistente virtual de ${orgName}. ¿En qué puedo ayudarte hoy?`;
-          rootObs.update({ output: response, metadata: { search_type: "small_talk" } });
-          return { response, metadata: { search_type: "small_talk", total_ms: Date.now() - totalStart } };
+          return finishTrace(response, { search_type: "small_talk", route: "small_talk" });
         }
 
         // 3. CACHE (por usuario — la respuesta puede contener datos personales)
         const cached = getCached(countryCode, userId, question);
         if (cached) {
-          rootObs.update({ output: cached, metadata: { search_type: "cache" } });
-          return { response: cached, metadata: { search_type: "cache", total_ms: Date.now() - totalStart } };
+          traceMetrics.cache_hit = 1;
+          return finishTrace(cached, { search_type: "cache", route: "cache" });
         }
 
         // Historial disponible para todos los paths a partir de aquí
         const history = await getRecentHistory(userId, countryCode, 10, question);
+        traceMetrics.history_turns = history.length;
 
         // 3.5 MENSAJE VAGO — pedir clarificación antes de buscar
         if (VAGUE_REGEX.test(question.trim())) {
           const response = await generateClarification(question, history, orgName, countryCode);
-          rootObs.update({ output: response, metadata: { search_type: "clarification" } });
-          return { response, metadata: { search_type: "clarification", total_ms: Date.now() - totalStart } };
+          return finishTrace(response, { search_type: "clarification", route: "clarification" });
         }
 
         // 4. BUSCAR EN knowledge_flows (Excel)
@@ -1050,15 +1217,30 @@ async function askAI(userId, countryCode, question) {
         if (flow) {
           console.log(`📋 Flow: ${flow.flow_id} [${flow.flow_type}] sim: ${flow.similarity?.toFixed(3)}`);
           const normalizedType = flow.flow_type?.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+          Object.assign(traceMetrics, {
+            retrieval_found: 1,
+            flow_id: flow.flow_id,
+            flow_type: flow.flow_type,
+            normalized_flow_type: normalizedType,
+            flow_similarity: flow.similarity ?? null,
+            flow_similarity_bucket: similarityBucket(flow.similarity),
+            flow_question_chars: textMetrics(flow.question).chars,
+            flow_answer_chars: textMetrics(flow.answer).chars,
+          });
 
           if (normalizedType === "informativa" || normalizedType === "seleccion") {
             const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode, userId);
             const searchType = normalizedType === "informativa" ? "flow_informativa" : "flow_seleccion";
             setCached(countryCode, userId, question, response);
+            traceMetrics.guardrail_final_unsupported_contact = hasUnsupportedContactInfo(response, flow.answer) ? 1 : 0;
             // LLM-as-Judge fire-and-forget — no bloquea la respuesta al usuario
             evaluateResponse(traceId, question, flow.answer, response).catch((e) => console.error("LLM-Judge:", e.message));
-            rootObs.update({ output: response, metadata: { search_type: searchType, flow_id: flow.flow_id, tipo_respuesta: flow.tipo_respuesta ?? normalizedType } });
-            return { response, metadata: { search_type: searchType, flow_id: flow.flow_id, total_ms: Date.now() - totalStart } };
+            return finishTrace(response, {
+              search_type: searchType,
+              route: "flow_grounded_rewrite",
+              flow_id: flow.flow_id,
+              tipo_respuesta: flow.tipo_respuesta ?? normalizedType,
+            });
           }
 
           if (normalizedType === "paso a paso" || normalizedType === "paso_a_paso") {
@@ -1070,18 +1252,28 @@ async function askAI(userId, countryCode, question) {
               .order("step_number", { ascending: true });
 
             if (!steps || steps.length === 0) {
-              rootObs.update({ output: flow.answer, metadata: { search_type: "flow_paso_a_paso" } });
-              return { response: flow.answer, metadata: { search_type: "flow_paso_a_paso" } };
+              return finishTrace(flow.answer, {
+                search_type: "flow_paso_a_paso",
+                route: "flow_step_without_steps",
+                flow_id: flow.flow_id,
+                total_steps: 0,
+              });
             }
 
             await upsertState(userId, countryCode, flow.flow_id, "paso a paso", 1, steps.length);
+            traceMetrics.total_steps = steps.length;
             const response = await presentStepWithLLM(steps[0].step_summary, {
               isDetail: false, isLastStep: steps.length === 1,
               question, history, orgName, countryCode,
               allSteps: steps, currentStepNumber: 1,
             });
-            rootObs.update({ output: response, metadata: { search_type: "flow_paso_a_paso", flow_id: flow.flow_id } });
-            return { response, metadata: { search_type: "flow_paso_a_paso", flow_id: flow.flow_id, total_steps: steps.length } };
+            return finishTrace(response, {
+              search_type: "flow_paso_a_paso",
+              route: "flow_step_start",
+              flow_id: flow.flow_id,
+              total_steps: steps.length,
+              step: 1,
+            });
           }
         }
 
@@ -1089,18 +1281,7 @@ async function askAI(userId, countryCode, question) {
         // Esto evita que el modelo invente telefonos, correos, sedes o links.
         const noCtxResponse = `Gracias por contarme. En este momento no tengo informacion especifica en el Excel para orientarte sobre eso. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
 
-        rootObs.update({
-          output: noCtxResponse,
-          metadata: { search_type: "no_excel_match" },
-        });
-
-        return {
-          response: noCtxResponse,
-          metadata: {
-            search_type: "no_excel_match",
-            total_ms: Date.now() - totalStart,
-          },
-        };
+        return finishTrace(noCtxResponse, { search_type: "no_excel_match", route: "fallback_no_excel" });
       })
   );
 }
