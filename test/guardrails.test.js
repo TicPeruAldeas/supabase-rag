@@ -13,6 +13,7 @@ const {
   hasUnsupportedContactInfo,
   sanitizeUserFacingResponse,
   isContinuationMessage,
+  isClosingMessage,
 } = require("../rag-service");
 
 test("hasUnsupportedContactInfo: detecta teléfono ausente en la fuente", () => {
@@ -98,5 +99,17 @@ test("isContinuationMessage: reconoce afirmaciones con cortesía encadenada", ()
 test("isContinuationMessage: no confunde saludos ni preguntas nuevas", () => {
   for (const msg of ["hola", "necesito ayuda con migración", "¿dónde queda la sede?", "si claro que no aplica"]) {
     assert.strictEqual(isContinuationMessage(msg), false, `"${msg}" no debería ser continuación`);
+  }
+});
+
+test("isClosingMessage: reconoce agradecimientos y despedidas", () => {
+  for (const msg of ["Listo, muchas gracias", "gracias", "muchas gracias por tu ayuda", "ok gracias", "chau", "adiós", "hasta luego", "todo claro"]) {
+    assert.strictEqual(isClosingMessage(msg), true, `"${msg}" debería ser cierre`);
+  }
+});
+
+test("isClosingMessage: no marca preguntas reales como cierre", () => {
+  for (const msg of ["gracias, pero dónde queda la sede?", "necesito ayuda", "qué documentos necesito"]) {
+    assert.strictEqual(isClosingMessage(msg), false, `"${msg}" no debería ser cierre`);
   }
 });

@@ -266,6 +266,16 @@ function isContinuationMessage(question) {
   return CONTINUATION_REGEX.test((question || "").trim());
 }
 
+// Mensajes de cierre / agradecimiento ("gracias", "listo muchas gracias",
+// "chau", "todo claro"...). Reciben una despedida cálida en vez del fallback
+// frío de "no tengo información". En un flujo activo se evalúa DESPUÉS de la
+// continuación, para que "listo"/"ok"/"sí" sigan avanzando el paso.
+const CLOSING_REGEX = /^(?:(?:muchas|mil|ok|okay|listo|perfecto|bien|excelente|genial)[\s,]+)*(?:gracias|graci[ai]s)(?:\s+(?:por\s+(?:tu|la|su)\s+\w+|de\s+nuevo|igualmente))?[\s!.,]*$|^(?:listo|ok|okay|eso\s+es\s+todo|es\s+todo|ya\s+est[áa]|chau|cha[ií]to|adi[oó]s|hasta\s+(?:luego|pronto|la\s+pr[oó]xima)|nos\s+vemos|bye|todo\s+claro|todo\s+bien)[\s!.,]*$/i;
+
+function isClosingMessage(question) {
+  return CLOSING_REGEX.test((question || "").trim());
+}
+
 const CONTACT_TOKEN_REGEX = /([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|https?:\/\/\S+|www\.\S+|\b(?:\+?\d[\d\s().-]{6,}\d)\b)/gi;
 const SHORT_NUMBER_REGEX = /\b\d{2,6}\b/g;
 const INSTITUTION_KEYWORD_REGEX = /\b(polic[ií]a|municipalidad|comisar[ií]a|serenazgo|demuna|defensor[ií]a|ministerio|hospital|centro de salud|l[ií]nea gratuita)\b/i;
@@ -1162,6 +1172,18 @@ async function askAI(userId, countryCode, question, options = {}) {
             }
             // accion "otro" → continúa al flujo normal
 
+          } else if (isClosingMessage(question)) {
+            // Despedida/agradecimiento → cerrar el flujo con gracia (sin fallback frío).
+            console.log(`🙏 Cierre dentro de flujo activo — finalizando: ${activeState.flow_id} paso ${activeState.current_step}`);
+            await updateStep(activeState.id, activeState.current_step, "completed");
+            const response = `¡Con gusto! Me alegra haber podido ayudarte. Si necesitas algo más, aquí estaré.`;
+            return finishTrace(response, {
+              search_type: "closing",
+              route: "active_flow_closing",
+              flow_id: activeState.flow_id,
+              step: activeState.current_step,
+            });
+
           } else {
             // Mensaje más complejo → verificar si es una intención nueva
             console.log(`🔍 Mensaje complejo con flujo activo — verificando intención nueva`);
@@ -1202,6 +1224,12 @@ async function askAI(userId, countryCode, question, options = {}) {
         if (SMALL_TALK_REGEX.test(question.trim())) {
           const response = `¡Hola! Soy el asistente virtual de ${orgName}. ¿En qué puedo ayudarte hoy?`;
           return finishTrace(response, { search_type: "small_talk", route: "small_talk" });
+        }
+
+        // 2. CIERRE / AGRADECIMIENTO — despedida cálida en vez del fallback frío.
+        if (isClosingMessage(question)) {
+          const response = `¡Con gusto! Me alegra haber podido orientarte. Si más adelante necesitas algo más, aquí estaré para ayudarte.`;
+          return finishTrace(response, { search_type: "closing", route: "closing" });
         }
 
         // 3. CACHE (por usuario — la respuesta puede contener datos personales)
@@ -1309,4 +1337,5 @@ module.exports = {
   hasUnsupportedContactInfo,
   sanitizeUserFacingResponse,
   isContinuationMessage,
+  isClosingMessage,
 };
