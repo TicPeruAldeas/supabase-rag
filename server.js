@@ -119,6 +119,10 @@ const ASK_SECRET = process.env.ASK_SECRET || process.env.INGEST_SECRET;
 const seenMessageIds = new Map(); // wa_message_id → timestamp
 const MESSAGE_DEDUP_TTL_MS = 5 * 60 * 1000;
 
+// Edad máxima de un mensaje entrante. Mensajes más viejos (reentregas de Meta
+// tras un redeploy) se descartan para no responder mensajes "fantasma".
+const MAX_INBOUND_MESSAGE_AGE_MS = (Number(process.env.MAX_INBOUND_MESSAGE_AGE_SECONDS) || 180) * 1000;
+
 function alreadyProcessed(messageId) {
   if (!messageId) return false;
   const now = Date.now();
@@ -336,6 +340,16 @@ app.post("/webhook", (req, res) => {
   const text = message.text?.body;
 
   if (!text) return;
+
+  // Descarta mensajes viejos: tras un redeploy, el dedup en memoria se borra y
+  // Meta puede reentregar webhooks pendientes de mensajes antiguos. El timestamp
+  // (hora en que el usuario lo envió) permite ignorarlos para no responder
+  // mensajes "fantasma" que el usuario percibe como no enviados.
+  const messageAgeMs = Date.now() - Number(message.timestamp) * 1000;
+  if (Number.isFinite(messageAgeMs) && messageAgeMs > MAX_INBOUND_MESSAGE_AGE_MS) {
+    console.log(`⏭️  Mensaje viejo ignorado (${Math.round(messageAgeMs / 1000)}s): ${message.id}`);
+    return;
+  }
 
   // Ignora reintentos de Meta del mismo mensaje
   if (alreadyProcessed(message.id)) {
