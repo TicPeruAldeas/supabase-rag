@@ -258,7 +258,9 @@ const SMALL_TALK_REGEX = /^(hola+s?|buenos\s+(d[ií]as|tardes|noches)|buenas?(\s
 
 // Señales de continuación dentro de un flow activo o contexto reciente.
 // "Sí", "ok", "listo", "luego qué hago", etc. nunca deben activar saludo.
-const CONTINUATION_REGEX = /^(sí|si|no|listo|ok|okay|ya|correcto|entendido|no\s+s[eé]|todav[ií]a\s+no|quiero\s+continuar|continuar|continúa|continua|siguiente|el\s+siguiente|segundo\s+paso|el\s+segundo\s+paso|paso\s+\d+|adelante|claro|dale|de\s+acuerdo|por\s+supuesto|a[ú]n\s+no|bien|perfecto|genial|luego|luego\s+(que|qué)\s+hago|dime\s+m[aá]s|👍|✅|☑)[.!,?\s]*$/i;
+// El grupo final opcional admite cortesías/afirmaciones encadenadas como
+// "sí por favor", "si porfavor", "ya dale", "claro continúa", "ok gracias".
+const CONTINUATION_REGEX = /^(sí|si|no|listo|ok|okay|ya|correcto|entendido|no\s+s[eé]|todav[ií]a\s+no|quiero\s+continuar|continuar|continúa|continua|siguiente|el\s+siguiente|segundo\s+paso|el\s+segundo\s+paso|paso\s+\d+|adelante|claro|dale|de\s+acuerdo|por\s+supuesto|a[ú]n\s+no|bien|perfecto|genial|luego|luego\s+(que|qué)\s+hago|dime\s+m[aá]s|👍|✅|☑)(?:\s+(?:por\s*favor|porfa|claro|dale|gracias|adelante|continúa|continua|sí|si))?[.!,?\s]*$/i;
 
 function isContinuationMessage(question) {
   return CONTINUATION_REGEX.test((question || "").trim());
@@ -1092,7 +1094,7 @@ async function askAI(userId, countryCode, question, options = {}) {
             console.log(`⏰ Flujo contextual expirado (>30 min): ${activeState.flow_id} — cancelando`);
             await updateStep(activeState.id, activeState.current_step, "cancelled");
             traceMetrics.active_flow_expired = 1;
-          } else if (String(activeState.flow_type || "").startsWith("followup_location") && isLikelyLocationAnswer(question)) {
+          } else if (String(activeState.flow_type || "").startsWith("followup_location") && isLikelyLocationAnswer(question) && !SMALL_TALK_REGEX.test(question.trim())) {
             const flow = await getFlowById(countryCode, activeState.flow_id);
             if (flow) {
               const location = extractLocationAnswer(question);
@@ -1134,6 +1136,18 @@ async function askAI(userId, countryCode, question, options = {}) {
             console.log(`⏰ Flujo expirado (>30 min): ${activeState.flow_id} — cancelando`);
             await updateStep(activeState.id, activeState.current_step, "cancelled");
             traceMetrics.active_flow_expired = 1;
+
+          } else if (SMALL_TALK_REGEX.test(question.trim())) {
+            // Saludo a media conversación: NO cancelar ni reiniciar el flujo.
+            // Devolvemos un saludo breve que mantiene el contexto del paso actual.
+            console.log(`👋 Saludo dentro de flujo activo — sin cancelar: ${activeState.flow_id} paso ${activeState.current_step}`);
+            const response = `¡Hola! Seguimos con tu consulta. ¿Quieres que continúe con el siguiente paso?`;
+            return finishTrace(response, {
+              search_type: "small_talk_in_flow",
+              route: "active_flow_smalltalk",
+              flow_id: activeState.flow_id,
+              step: activeState.current_step,
+            });
 
           } else if (isContinuationMessage(question)) {
             // Señal de continuación explícita → seguir el paso actual sin retrieval

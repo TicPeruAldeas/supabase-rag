@@ -89,8 +89,14 @@ test("isContinuationMessage: reconoce confirmaciones de continuación", () => {
   }
 });
 
+test("isContinuationMessage: reconoce afirmaciones con cortesía encadenada", () => {
+  for (const msg of ["Si porfavor", "sí por favor", "ya dale", "claro continúa", "ok gracias"]) {
+    assert.strictEqual(isContinuationMessage(msg), true, `"${msg}" debería ser continuación`);
+  }
+});
+
 test("isContinuationMessage: no confunde saludos ni preguntas nuevas", () => {
-  for (const msg of ["hola", "necesito ayuda con migración", "¿dónde queda la sede?"]) {
+  for (const msg of ["hola", "necesito ayuda con migración", "¿dónde queda la sede?", "si claro que no aplica"]) {
     assert.strictEqual(isContinuationMessage(msg), false, `"${msg}" no debería ser continuación`);
   }
 });

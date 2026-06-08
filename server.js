@@ -228,52 +228,36 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// ── Mensajes entrantes ────────────────────────────────────────
-app.post("/webhook", async (req, res) => {
-  // Rechaza cualquier POST que no esté firmado por Meta con el App Secret.
-  if (!verifyMetaSignature(req)) {
-    console.warn("⚠️  Firma de Meta inválida o ausente — webhook rechazado");
-    return res.sendStatus(403);
-  }
+// ── Cola por usuario (serialización) ──────────────────────────
+// Meta puede entregar varios mensajes del mismo usuario casi a la vez. Sin
+// serializar, se procesan en paralelo y se pisan el conversation_state (un
+// mensaje cancela el flujo mientras otro lo avanza). Encadenamos las tareas
+// del mismo usuario para que se ejecuten en orden, una tras otra.
+const userQueues = new Map(); // key (país:usuario) → promesa con la cola de tareas
 
-  res.sendStatus(200); // Siempre primero — evita reintento de Meta
+function runSerialized(key, task) {
+  const prev = userQueues.get(key) || Promise.resolve();
+  // .catch en la tarea → la cola nunca queda en estado rechazado y la siguiente
+  // tarea siempre arranca, haya fallado o no la anterior.
+  const current = prev.then(() => task()).catch((err) =>
+    console.error(`❌ Error en tarea serializada [${key}]:`, err.message)
+  );
+  userQueues.set(key, current);
+  // Libera la entrada cuando esta tarea es la última de la cola (evita fuga de memoria).
+  current.finally(() => {
+    if (userQueues.get(key) === current) userQueues.delete(key);
+  });
+  return current;
+}
 
-  // Hoisted para poder enviar un fallback al usuario si algo falla más abajo.
-  let from = null;
-  let phoneNumberId = null;
-  let token = null;
-
+// Procesa un mensaje entrante completo: guarda turno, consulta RAG, responde y
+// guarda la respuesta. Los `await` de guardado mantienen el orden cronológico en
+// la BD para que el historial del siguiente mensaje sea consistente.
+async function handleIncomingMessage({ from, text, countryCode, phoneNumberId, token, messageId, incomingPhoneNumberId }) {
   try {
-    const value = req.body.entry?.[0]?.changes?.[0]?.value;
-    const message = value?.messages?.[0];
-    const metadata = value?.metadata;
-
-    if (!message) return;
-
-    const incomingPhoneNumberId = metadata?.phone_number_id;
-    const countryConfig = COUNTRY_MAP[incomingPhoneNumberId];
-
-    if (!countryConfig) {
-      console.log(`⏭️  Ignorando — número no configurado: ${incomingPhoneNumberId}`);
-      return;
-    }
-
-    const { countryCode } = countryConfig;
-    ({ phoneNumberId, token } = countryConfig);
-    from = message.from;
-    const text = message.text?.body;
-
-    if (!text) return;
-
-    // Ignora reintentos de Meta del mismo mensaje
-    if (alreadyProcessed(message.id)) {
-      console.log(`⏭️  Mensaje duplicado ignorado: ${message.id}`);
-      return;
-    }
-
     console.log(`📩 [${countryCode}] ${from}: ${text}`);
 
-    saveConversationTurn({
+    await saveConversationTurn({
       userId: from,
       countryCode,
       role: "user",
@@ -281,21 +265,21 @@ app.post("/webhook", async (req, res) => {
       source: "whatsapp",
       metadata: {
         event: "incoming_whatsapp_message",
-        wa_message_id: message.id || null,
+        wa_message_id: messageId,
         phone_number_id: incomingPhoneNumberId,
       },
     }).catch((err) => console.error("Error guardando user:", err.message));
 
     const result = await askAI(from, countryCode, text, {
       source: "whatsapp",
-      waMessageId: message.id || null,
+      waMessageId: messageId,
       phoneNumberId: incomingPhoneNumberId,
     });
 
     await sendWhatsAppMessage(from, result.response, phoneNumberId, token);
     console.log(`✅ [${countryCode}] ${from} → ${result.metadata?.search_type} ${result.metadata?.total_ms}ms`);
 
-    saveConversationTurn({
+    await saveConversationTurn({
       userId: from,
       countryCode,
       role: "assistant",
@@ -309,22 +293,68 @@ app.post("/webhook", async (req, res) => {
     }).catch((err) => console.error("Error guardando assistant:", err.message));
 
   } catch (err) {
-    console.error("❌ Error en webhook:", err.message);
-
-    // Si ya identificamos al usuario y su país, avisarle en vez de dejarlo sin respuesta.
-    if (from && phoneNumberId && token) {
-      try {
-        await sendWhatsAppMessage(
-          from,
-          "Disculpa, estamos teniendo un problema técnico en este momento. Por favor intenta de nuevo en unos minutos.",
-          phoneNumberId,
-          token
-        );
-      } catch (sendErr) {
-        console.error("❌ Error enviando fallback:", sendErr.message);
-      }
+    console.error("❌ Error procesando mensaje:", err.message);
+    try {
+      await sendWhatsAppMessage(
+        from,
+        "Disculpa, estamos teniendo un problema técnico en este momento. Por favor intenta de nuevo en unos minutos.",
+        phoneNumberId,
+        token
+      );
+    } catch (sendErr) {
+      console.error("❌ Error enviando fallback:", sendErr.message);
     }
   }
+}
+
+// ── Mensajes entrantes ────────────────────────────────────────
+app.post("/webhook", (req, res) => {
+  // Rechaza cualquier POST que no esté firmado por Meta con el App Secret.
+  if (!verifyMetaSignature(req)) {
+    console.warn("⚠️  Firma de Meta inválida o ausente — webhook rechazado");
+    return res.sendStatus(403);
+  }
+
+  res.sendStatus(200); // Siempre primero — evita reintento de Meta
+
+  const value = req.body.entry?.[0]?.changes?.[0]?.value;
+  const message = value?.messages?.[0];
+  const metadata = value?.metadata;
+
+  if (!message) return;
+
+  const incomingPhoneNumberId = metadata?.phone_number_id;
+  const countryConfig = COUNTRY_MAP[incomingPhoneNumberId];
+
+  if (!countryConfig) {
+    console.log(`⏭️  Ignorando — número no configurado: ${incomingPhoneNumberId}`);
+    return;
+  }
+
+  const { countryCode, phoneNumberId, token } = countryConfig;
+  const from = message.from;
+  const text = message.text?.body;
+
+  if (!text) return;
+
+  // Ignora reintentos de Meta del mismo mensaje
+  if (alreadyProcessed(message.id)) {
+    console.log(`⏭️  Mensaje duplicado ignorado: ${message.id}`);
+    return;
+  }
+
+  // Serializa por usuario: los mensajes del mismo número se procesan en orden.
+  runSerialized(`${countryCode}:${from}`, () =>
+    handleIncomingMessage({
+      from,
+      text,
+      countryCode,
+      phoneNumberId,
+      token,
+      messageId: message.id || null,
+      incomingPhoneNumberId,
+    })
+  );
 });
 
 // ── Endpoint REST para testing / ChatFuel ─────────────────────
