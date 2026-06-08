@@ -32,7 +32,9 @@ const { askAI, saveConversationTurn } = require("./rag-service");
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 
 // App Secret de la app de Meta — valida la firma X-Hub-Signature-256 del webhook.
-const META_APP_SECRET = process.env.META_APP_SECRET;
+// .trim(): Railway suele dejar un salto de línea/espacio al pegar el valor, lo
+// que rompe el HMAC. Lo limpiamos para evitar firmas inválidas con tráfico real.
+const META_APP_SECRET = (process.env.META_APP_SECRET || "").trim() || undefined;
 if (!META_APP_SECRET) {
   console.warn("⚠️  META_APP_SECRET no configurado — el webhook NO verificará la firma de Meta (riesgo de mensajes falsos).");
 }
@@ -48,7 +50,10 @@ app.use(express.urlencoded({ extended: true }));
 function verifyMetaSignature(req) {
   if (!META_APP_SECRET) return true; // sin secret configurado no se puede validar (warning al arranque)
   const signature = req.headers["x-hub-signature-256"];
-  if (!signature || !req.rawBody) return false;
+  if (!signature || !req.rawBody) {
+    console.warn(`🔏 Firma ausente: header=${Boolean(signature)} rawBody=${Boolean(req.rawBody)}`);
+    return false;
+  }
 
   const expected = "sha256=" + crypto
     .createHmac("sha256", META_APP_SECRET)
@@ -57,8 +62,17 @@ function verifyMetaSignature(req) {
 
   const sigBuf = Buffer.from(signature);
   const expBuf = Buffer.from(expected);
-  if (sigBuf.length !== expBuf.length) return false;
-  return crypto.timingSafeEqual(sigBuf, expBuf);
+  const ok = sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf);
+
+  if (!ok) {
+    // Diagnóstico sin filtrar el secret: si rawBodyLen != contentLength → body
+    // alterado; si secretLen != 32 → valor mal pegado (debe ser 32 hex).
+    console.warn(
+      `🔏 Firma inválida — recibida=${signature.slice(0, 16)}… esperada=${expected.slice(0, 16)}… ` +
+      `rawBodyLen=${req.rawBody.length} contentLength=${req.headers["content-length"]} secretLen=${META_APP_SECRET.length}`
+    );
+  }
+  return ok;
 }
 
 // ── Mapa multi-país: phoneNumberId → { countryCode, phoneNumberId, token }
