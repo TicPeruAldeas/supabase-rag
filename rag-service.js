@@ -858,59 +858,13 @@ REGLAS para el campo "respuesta":
   });
 }
 
-// ── Parsear pasos numerados desde texto libre ─────────────────
-function parseStepsFromText(text) {
-  const lines = (text || "").split("\n").map(l => l.trim()).filter(Boolean);
-  const steps = [];
-  let current = null;
-  for (const line of lines) {
-    const m = line.match(/^(\d+)[.)]\s+(.+)/);
-    if (m) {
-      if (current) steps.push(current);
-      current = { number: parseInt(m[1]), summary: m[2] };
-    } else if (current) {
-      current.summary += " " + line;
-    }
-  }
-  if (current) steps.push(current);
-  return steps;
-}
-
-// ── 3 niveles de respuesta según tipo_respuesta ───────────────
-// NIVEL 1 "informativa" (o null): LLM reformula libremente con la info de BD
-// NIVEL 2 "paso a paso":          LLM adapta tono pero conserva TODOS los pasos y datos exactos
-// NIVEL 3 "seleccion":            Texto exacto de BD, sin ninguna modificación
-async function presentFlowWithLLM(flow, question, history, orgName, countryCode, userId) {
-  const raw = (flow.tipo_respuesta ?? flow.flow_type ?? "informativa") + "";
-  const tipo = raw.toLowerCase().trim().normalize("NFD").replace(/[̀-ͯ]/g, "");
-
-  // NIVEL 2: inicia navegación guiada — muestra UN paso a la vez
-  const isNivel2 = tipo === "paso a paso" || tipo === "paso_a_paso";
-  if (isNivel2 && userId) {
-    const { data: kSteps } = await supabase
-      .from("knowledge_steps")
-      .select("step_number, step_summary")
-      .eq("flow_id", flow.flow_id)
-      .eq("country_code", countryCode)
-      .order("step_number", { ascending: true });
-
-    const steps = (kSteps && kSteps.length > 0)
-      ? kSteps.map(s => ({ number: s.step_number, summary: s.step_summary }))
-      : parseStepsFromText(flow.answer);
-
-    if (steps.length > 0) {
-      console.log(`🪜 Flow NIVEL 2 (paso a paso guiado): ${flow.flow_id} — ${steps.length} pasos`);
-      await upsertState(userId, countryCode, flow.flow_id, "paso a paso", 1, steps.length);
-      return presentStepWithLLM(steps[0].summary, {
-        isDetail: false, isLastStep: steps.length === 1,
-        question, history, orgName, countryCode,
-        allSteps: steps, currentStepNumber: 1,
-      });
-    }
-  }
-
+// ── Respuesta puntual basada en un flow (informativa / seleccion) ──
+// El LLM reformula la "Respuesta" del Excel de forma natural y empática,
+// sin agregar datos que no estén en la fuente. Los flows "paso a paso" se
+// manejan aparte en askAI (navegación guiada paso por paso).
+async function presentFlowWithLLM(flow, question, history, orgName, countryCode) {
   return startActiveObservation("claude-flow-grounded-response", async (obs) => {
-    obs.update({ input: { question, tipo_respuesta: tipo, flow_id: flow.flow_id } });
+    obs.update({ input: { question, flow_type: flow.flow_type, flow_id: flow.flow_id } });
 
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
@@ -1272,19 +1226,22 @@ async function askAI(userId, countryCode, question, options = {}) {
           });
 
           if (normalizedType === "informativa" || normalizedType === "seleccion") {
-            const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode, userId);
+            const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode);
             const searchType = normalizedType === "informativa" ? "flow_informativa" : "flow_seleccion";
-            setCached(countryCode, userId, question, response);
             traceMetrics.guardrail_final_unsupported_contact = hasUnsupportedContactInfo(response, flow.answer) ? 1 : 0;
             if (sourceRequestsLocation(flow.answer)) {
+              // No cachear: la próxima pregunta debe entrar al follow-up de ubicación,
+              // no devolver la respuesta previa que aún pedía la ciudad.
               await upsertState(userId, countryCode, flow.flow_id, `followup_location:${normalizedType}`, 0, 0);
               traceMetrics.awaiting_location_followup = 1;
+            } else {
+              setCached(countryCode, userId, question, response);
             }
             return finishTrace(response, {
               search_type: searchType,
               route: "flow_grounded_rewrite",
               flow_id: flow.flow_id,
-              tipo_respuesta: flow.tipo_respuesta ?? normalizedType,
+              tipo_respuesta: normalizedType,
             });
           }
 
@@ -1331,4 +1288,11 @@ async function askAI(userId, countryCode, question, options = {}) {
   );
 }
 
-module.exports = { askAI, saveConversationTurn };
+module.exports = {
+  askAI,
+  saveConversationTurn,
+  // Helpers puros expuestos para pruebas unitarias (sin efectos de red).
+  hasUnsupportedContactInfo,
+  sanitizeUserFacingResponse,
+  isContinuationMessage,
+};

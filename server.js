@@ -14,6 +14,7 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
+const crypto = require("crypto");
 const { createClient } = require("@supabase/supabase-js");
 const OpenAI = require("openai").default;
 const Anthropic = require("@anthropic-ai/sdk");
@@ -30,9 +31,35 @@ const { askAI, saveConversationTurn } = require("./rag-service");
 
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 
+// App Secret de la app de Meta — valida la firma X-Hub-Signature-256 del webhook.
+const META_APP_SECRET = process.env.META_APP_SECRET;
+if (!META_APP_SECRET) {
+  console.warn("⚠️  META_APP_SECRET no configurado — el webhook NO verificará la firma de Meta (riesgo de mensajes falsos).");
+}
+
 const app = express();
-app.use(express.json());
+// Guardamos el cuerpo crudo para poder verificar el HMAC de Meta byte a byte.
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: true }));
+
+// ── Verificación de firma del webhook de Meta ─────────────────
+// Meta firma cada POST con HMAC-SHA256(appSecret, rawBody). Si la firma no
+// coincide, el mensaje no proviene de Meta y se rechaza.
+function verifyMetaSignature(req) {
+  if (!META_APP_SECRET) return true; // sin secret configurado no se puede validar (warning al arranque)
+  const signature = req.headers["x-hub-signature-256"];
+  if (!signature || !req.rawBody) return false;
+
+  const expected = "sha256=" + crypto
+    .createHmac("sha256", META_APP_SECRET)
+    .update(req.rawBody)
+    .digest("hex");
+
+  const sigBuf = Buffer.from(signature);
+  const expBuf = Buffer.from(expected);
+  if (sigBuf.length !== expBuf.length) return false;
+  return crypto.timingSafeEqual(sigBuf, expBuf);
+}
 
 // ── Mapa multi-país: phoneNumberId → { countryCode, phoneNumberId, token }
 // Formato nuevo: WHATSAPP_PHONE_NUMBER_ID_PE + WHATSAPP_TOKEN_PE (por cada país)
@@ -122,6 +149,58 @@ async function sendWhatsAppMessage(to, message, phoneNumberId, token) {
   return data;
 }
 
+// ── Procesar pasos "paso a paso" en background ────────────────
+// Se ejecuta fuera del ciclo request/response de /ingest-row para no exceder
+// el timeout del webhook (Make): cada paso requiere una llamada a Claude.
+// Los resúmenes se generan en paralelo para minimizar la latencia total.
+async function processStepsInBackground(flowId, answer, countryCode) {
+  const lines = answer.split("\n").map((l) => l.trim()).filter(Boolean);
+  const steps = [];
+  let currentStep = null;
+
+  for (const line of lines) {
+    const match = line.match(/^(\d+)\.\s+(.+)/);
+    if (match) {
+      if (currentStep) steps.push(currentStep);
+      currentStep = { number: parseInt(match[1]), text: match[2] };
+    } else if (currentStep) {
+      currentStep.text += " " + line;
+    }
+  }
+  if (currentStep) steps.push(currentStep);
+  if (steps.length === 0) return;
+
+  await supabase
+    .from("knowledge_steps")
+    .delete()
+    .eq("flow_id", flowId)
+    .eq("country_code", countryCode);
+
+  await Promise.all(steps.map(async (step) => {
+    const summaryResponse = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 100,
+      system: "Resume el siguiente paso en máximo 2 líneas cortas y claras en español. Sin markdown.",
+      messages: [{
+        role: "user",
+        content: `Paso ${step.number} de ${steps.length}:\n${step.text}`,
+      }],
+    });
+
+    await supabase.from("knowledge_steps").upsert({
+      flow_id: flowId,
+      step_number: step.number,
+      step_summary: summaryResponse.content[0].text.trim(),
+      step_detail: step.text,
+      country_code: countryCode,
+      source_name: "google_sheets",
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "flow_id,country_code,step_number" });
+  }));
+
+  console.log(`✅ ${steps.length} pasos procesados en background [${flowId}]`);
+}
+
 // ── Verificación Meta ─────────────────────────────────────────
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
@@ -137,7 +216,18 @@ app.get("/webhook", (req, res) => {
 
 // ── Mensajes entrantes ────────────────────────────────────────
 app.post("/webhook", async (req, res) => {
+  // Rechaza cualquier POST que no esté firmado por Meta con el App Secret.
+  if (!verifyMetaSignature(req)) {
+    console.warn("⚠️  Firma de Meta inválida o ausente — webhook rechazado");
+    return res.sendStatus(403);
+  }
+
   res.sendStatus(200); // Siempre primero — evita reintento de Meta
+
+  // Hoisted para poder enviar un fallback al usuario si algo falla más abajo.
+  let from = null;
+  let phoneNumberId = null;
+  let token = null;
 
   try {
     const value = req.body.entry?.[0]?.changes?.[0]?.value;
@@ -154,8 +244,9 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    const { countryCode, phoneNumberId, token } = countryConfig;
-    const from = message.from;
+    const { countryCode } = countryConfig;
+    ({ phoneNumberId, token } = countryConfig);
+    from = message.from;
     const text = message.text?.body;
 
     if (!text) return;
@@ -205,6 +296,20 @@ app.post("/webhook", async (req, res) => {
 
   } catch (err) {
     console.error("❌ Error en webhook:", err.message);
+
+    // Si ya identificamos al usuario y su país, avisarle en vez de dejarlo sin respuesta.
+    if (from && phoneNumberId && token) {
+      try {
+        await sendWhatsAppMessage(
+          from,
+          "Disculpa, estamos teniendo un problema técnico en este momento. Por favor intenta de nuevo en unos minutos.",
+          phoneNumberId,
+          token
+        );
+      } catch (sendErr) {
+        console.error("❌ Error enviando fallback:", sendErr.message);
+      }
+    }
   }
 });
 
@@ -292,56 +397,16 @@ app.post("/ingest-row", async (req, res) => {
 
     if (flowError) throw new Error(flowError.message);
 
-    // Si es paso a paso, procesar pasos con resumen de Claude
-    if (flowType === "paso a paso" || flowType === "paso_a_paso") {
-      const lines = Respuesta.split("\n").map(l => l.trim()).filter(Boolean);
-      const steps = [];
-      let currentStep = null;
-
-      for (const line of lines) {
-        const match = line.match(/^(\d+)\.\s+(.+)/);
-        if (match) {
-          if (currentStep) steps.push(currentStep);
-          currentStep = { number: parseInt(match[1]), text: match[2] };
-        } else if (currentStep) {
-          currentStep.text += " " + line;
-        }
-      }
-      if (currentStep) steps.push(currentStep);
-
-      if (steps.length > 0) {
-        await supabase
-          .from("knowledge_steps")
-          .delete()
-          .eq("flow_id", ID)
-          .eq("country_code", rowCountryCode);
-
-        for (const step of steps) {
-          const summaryResponse = await anthropic.messages.create({
-            model: CLAUDE_MODEL,
-            max_tokens: 100,
-            system: "Resume el siguiente paso en máximo 2 líneas cortas y claras en español. Sin markdown.",
-            messages: [{
-              role: "user",
-              content: `Paso ${step.number} de ${steps.length}:\n${step.text}`,
-            }],
-          });
-
-          await supabase.from("knowledge_steps").upsert({
-            flow_id: ID,
-            step_number: step.number,
-            step_summary: summaryResponse.content[0].text.trim(),
-            step_detail: step.text,
-            country_code: rowCountryCode,
-            source_name: "google_sheets",
-            updated_at: new Date().toISOString(),
-          }, { onConflict: "flow_id,country_code,step_number" });
-        }
-      }
-    }
-
     console.log(`✅ Fila ingestada: ${ID} [${flowType}] [${rowCountryCode}]`);
     res.json({ success: true, flow_id: ID, flow_type: flowType, country_code: rowCountryCode });
+
+    // Los pasos requieren una llamada a Claude por cada uno: se procesan en
+    // background para que la respuesta a Make no dependa de ello (evita timeout).
+    if (flowType === "paso a paso" || flowType === "paso_a_paso") {
+      processStepsInBackground(ID, Respuesta, rowCountryCode).catch((err) =>
+        console.error(`❌ Error procesando pasos en background [${ID}]:`, err.message)
+      );
+    }
 
   } catch (err) {
     console.error("❌ Error en /ingest-row:", err.message);
