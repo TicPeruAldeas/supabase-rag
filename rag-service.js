@@ -329,6 +329,27 @@ function similarityBucket(similarity) {
   return "low";
 }
 
+function sourceRequestsLocation(text) {
+  return /\b(ciudad|localidad|d[oó]nde|donde|cercana|cercano|ubicaci[oó]n|encuentras|encuentra)\b/i
+    .test(String(text || ""));
+}
+
+function isLikelyLocationAnswer(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  if (value.length > 80) return false;
+  return /^(me\s+encuentro\s+en|estoy\s+en|en|vivo\s+en|ando\s+en|soy\s+de)?\s*[a-záéíóúñü]+(?:[\s,.-]+[a-záéíóúñü]+){0,4}\s*$/i
+    .test(value);
+}
+
+function extractLocationAnswer(text) {
+  return String(text || "")
+    .trim()
+    .replace(/^(me\s+encuentro\s+en|estoy\s+en|en|vivo\s+en|ando\s+en|soy\s+de)\s+/i, "")
+    .replace(/[.!,?]+$/g, "")
+    .trim();
+}
+
 function numericMetric(value) {
   if (typeof value === "boolean") return value ? 1 : 0;
   if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -556,6 +577,22 @@ async function searchFlow(countryCode, question) {
     });
     return result;
   });
+}
+
+async function getFlowById(countryCode, flowId) {
+  const { data, error } = await supabase
+    .from("knowledge_flows")
+    .select("flow_id, country_code, flow_type, question, answer")
+    .eq("country_code", countryCode)
+    .eq("flow_id", flowId)
+    .maybeSingle();
+
+  if (error) {
+    console.error(`❌ getFlowById [${countryCode}/${flowId}]:`, error.message);
+    return null;
+  }
+
+  return data || null;
 }
 
 // Presentar un paso con LLM.
@@ -966,7 +1003,7 @@ REGLAS ESTRICTAS:
 - Usa unicamente la informacion de RESPUESTA FUENTE.
 - No agregues instituciones, telefonos, numeros, correos, enlaces, ciudades, sedes, requisitos, beneficios ni canales que no aparezcan literalmente en RESPUESTA FUENTE.
 - Si la fuente pide un dato al usuario, conserva esa pregunta.
-- Maximo 4 lineas. Sin markdown ni listas.`,
+- Maximo 4 lineas. Sin markdown, listas ni emojis.`,
         },
       ],
       messages: [
@@ -1004,6 +1041,66 @@ ${flow.answer}`,
     return resp;
   }, { asType: "generation" });
 
+}
+
+async function presentLocationFollowup(flow, location, question, history, orgName, countryCode) {
+  return startActiveObservation("claude-location-followup", async (obs) => {
+    obs.update({ input: { flow_id: flow.flow_id, location, question } });
+
+    const msg = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 220,
+      temperature: 0,
+      system: [
+        {
+          type: "text",
+          text: `Eres un asistente de WhatsApp. El usuario respondió la ciudad o ubicación que se le pidió antes.
+
+REGLAS ESTRICTAS:
+- Responde usando únicamente RESPUESTA FUENTE y la ubicación que el usuario acaba de dar.
+- Puedes reconocer la ubicación del usuario.
+- No inventes instituciones, sedes, teléfonos, números, correos, enlaces ni servicios específicos si no aparecen literalmente en RESPUESTA FUENTE.
+- No digas "Excel", "base de datos" ni "base de conocimiento" al usuario.
+- Maximo 4 lineas. Sin markdown, listas ni emojis.`,
+        },
+      ],
+      messages: [
+        ...history,
+        {
+          role: "user",
+          content: `Ubicacion indicada por el usuario: ${location}
+
+Mensaje actual:
+${question}
+
+RESPUESTA FUENTE:
+${flow.answer}`,
+        },
+      ],
+    });
+
+    const rawResponse = msg.content[0]?.text
+      || `Gracias por decirme que estas en ${location}. Segun la informacion disponible, tu caso requiere atencion prioritaria. Es importante que puedas acercarte o contactar lo antes posible con servicios de apoyo en tu localidad para recibir orientacion, proteccion y acompanamiento.`;
+    const resp = guardGroundedContactInfo(rawResponse, `${flow.answer}\n${location}`, orgName);
+
+    obs.update({
+      output: resp,
+      model: CLAUDE_MODEL,
+      metadata: {
+        flow_id: flow.flow_id,
+        location,
+        response_chars: textMetrics(resp).chars,
+      },
+      usageDetails: {
+        input: msg.usage.input_tokens,
+        output: msg.usage.output_tokens,
+        cache_read: msg.usage.cache_read_input_tokens ?? 0,
+        cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
+      },
+    });
+
+    return resp;
+  }, { asType: "generation" });
 }
 
 // ── Clarificación inteligente ─────────────────────────────────
@@ -1121,6 +1218,48 @@ async function askAI(userId, countryCode, question, options = {}) {
         let precomputedFlow = null;
 
         const activeState = await getActiveState(userId, countryCode);
+        if (activeState && !(activeState.flow_type === "paso a paso" || activeState.flow_type === "paso_a_paso")) {
+          const elapsed = Date.now() - new Date(activeState.updated_at).getTime();
+          Object.assign(traceMetrics, {
+            active_state_present: 1,
+            active_flow_id: activeState.flow_id,
+            active_flow_type: activeState.flow_type,
+            active_flow_step: activeState.current_step,
+            active_flow_total_steps: activeState.total_steps,
+            active_flow_age_ms: elapsed,
+          });
+
+          if (elapsed > ACTIVE_FLOW_TIMEOUT_MS) {
+            console.log(`⏰ Flujo contextual expirado (>30 min): ${activeState.flow_id} — cancelando`);
+            await updateStep(activeState.id, activeState.current_step, "cancelled");
+            traceMetrics.active_flow_expired = 1;
+          } else if (String(activeState.flow_type || "").startsWith("followup_location") && isLikelyLocationAnswer(question)) {
+            const flow = await getFlowById(countryCode, activeState.flow_id);
+            if (flow) {
+              const location = extractLocationAnswer(question);
+              const history = await getRecentHistory(userId, countryCode, 10, question);
+              traceMetrics.history_turns = history.length;
+              Object.assign(traceMetrics, {
+                retrieval_found: 1,
+                flow_id: flow.flow_id,
+                flow_type: flow.flow_type,
+                normalized_flow_type: "followup_location",
+                followup_location: location,
+              });
+
+              const response = await presentLocationFollowup(flow, location, question, history, orgName, countryCode);
+              await updateStep(activeState.id, activeState.current_step, "completed");
+              evaluateResponse(traceId, question, flow.answer, response).catch((e) => console.error("LLM-Judge:", e.message));
+              return finishTrace(response, {
+                search_type: "flow_location_followup",
+                route: "flow_location_followup",
+                flow_id: flow.flow_id,
+                followup_location: location,
+              });
+            }
+          }
+        }
+
         if (activeState && (activeState.flow_type === "paso a paso" || activeState.flow_type === "paso_a_paso")) {
           const elapsed = Date.now() - new Date(activeState.updated_at).getTime();
           Object.assign(traceMetrics, {
@@ -1233,6 +1372,10 @@ async function askAI(userId, countryCode, question, options = {}) {
             const searchType = normalizedType === "informativa" ? "flow_informativa" : "flow_seleccion";
             setCached(countryCode, userId, question, response);
             traceMetrics.guardrail_final_unsupported_contact = hasUnsupportedContactInfo(response, flow.answer) ? 1 : 0;
+            if (sourceRequestsLocation(flow.answer)) {
+              await upsertState(userId, countryCode, flow.flow_id, `followup_location:${normalizedType}`, 0, 0);
+              traceMetrics.awaiting_location_followup = 1;
+            }
             // LLM-as-Judge fire-and-forget — no bloquea la respuesta al usuario
             evaluateResponse(traceId, question, flow.answer, response).catch((e) => console.error("LLM-Judge:", e.message));
             return finishTrace(response, {
@@ -1279,7 +1422,7 @@ async function askAI(userId, countryCode, question, options = {}) {
 
         // 5. FALLBACK - solo Excel: sin flow recuperado no se llama al LLM.
         // Esto evita que el modelo invente telefonos, correos, sedes o links.
-        const noCtxResponse = `Gracias por contarme. En este momento no tengo informacion especifica en el Excel para orientarte sobre eso. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
+        const noCtxResponse = `Gracias por contarme. En este momento no tengo informacion especifica para orientarte sobre eso. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
 
         return finishTrace(noCtxResponse, { search_type: "no_excel_match", route: "fallback_no_excel" });
       })
