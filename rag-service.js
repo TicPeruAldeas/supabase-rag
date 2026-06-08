@@ -25,13 +25,9 @@ const supabase = createClient(
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// ── Langfuse v5 (opcional) ────────────────────────────────────
-let langfuseClient = null;
-
 if (process.env.LANGFUSE_PUBLIC_KEY && process.env.LANGFUSE_SECRET_KEY) {
   const { NodeSDK } = require("@opentelemetry/sdk-node");
   const { LangfuseSpanProcessor } = require("@langfuse/otel");
-  const { LangfuseClient } = require("@langfuse/client");
 
   const sdk = new NodeSDK({
     spanProcessors: [
@@ -44,12 +40,6 @@ if (process.env.LANGFUSE_PUBLIC_KEY && process.env.LANGFUSE_SECRET_KEY) {
     ],
   });
   sdk.start();
-
-  langfuseClient = new LangfuseClient({
-    publicKey: process.env.LANGFUSE_PUBLIC_KEY,
-    secretKey: process.env.LANGFUSE_SECRET_KEY,
-    baseUrl: process.env.LANGFUSE_HOST || "https://cloud.langfuse.com",
-  });
 
   console.log("📊 Langfuse v5 conectado");
 } else {
@@ -340,6 +330,68 @@ function similarityBucket(similarity) {
   return "low";
 }
 
+function envNumber(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+const COST_PER_MTOK = {
+  claudeInput: envNumber("CLAUDE_INPUT_USD_PER_MTOK", 3),
+  claudeOutput: envNumber("CLAUDE_OUTPUT_USD_PER_MTOK", 15),
+  claudeCacheWrite: envNumber("CLAUDE_CACHE_WRITE_USD_PER_MTOK", 3.75),
+  claudeCacheRead: envNumber("CLAUDE_CACHE_READ_USD_PER_MTOK", 0.30),
+  embeddingInput: envNumber("OPENAI_EMBEDDING_USD_PER_MTOK", 0.02),
+};
+
+function perMillion(tokens, usdPerMillion) {
+  return ((tokens || 0) * usdPerMillion) / 1_000_000;
+}
+
+function anthropicUsageDetails(usage = {}) {
+  const promptTokens = usage.input_tokens ?? 0;
+  const completionTokens = usage.output_tokens ?? 0;
+  const cacheReadTokens = usage.cache_read_input_tokens ?? 0;
+  const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens + cacheReadTokens + cacheCreationTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+  };
+}
+
+function anthropicCostDetails(usage = {}) {
+  const input = perMillion(usage.input_tokens ?? 0, COST_PER_MTOK.claudeInput);
+  const output = perMillion(usage.output_tokens ?? 0, COST_PER_MTOK.claudeOutput);
+  const cacheRead = perMillion(usage.cache_read_input_tokens ?? 0, COST_PER_MTOK.claudeCacheRead);
+  const cacheCreation = perMillion(usage.cache_creation_input_tokens ?? 0, COST_PER_MTOK.claudeCacheWrite);
+  const totalCost = input + output + cacheRead + cacheCreation;
+  return {
+    input,
+    output,
+    cacheRead,
+    cacheCreation,
+    totalCost,
+  };
+}
+
+function embeddingUsageDetails(usage = {}) {
+  const promptTokens = usage.total_tokens ?? 0;
+  return {
+    promptTokens,
+    totalTokens: promptTokens,
+  };
+}
+
+function embeddingCostDetails(usage = {}) {
+  const input = perMillion(usage.total_tokens ?? 0, COST_PER_MTOK.embeddingInput);
+  return {
+    input,
+    totalCost: input,
+  };
+}
+
 function sourceRequestsLocation(text) {
   return /\b(ciudad|localidad|d[oó]nde|donde|cercana|cercano|ubicaci[oó]n|encuentras|encuentra)\b/i
     .test(String(text || ""));
@@ -361,47 +413,6 @@ function extractLocationAnswer(text) {
     .trim();
 }
 
-function numericMetric(value) {
-  if (typeof value === "boolean") return value ? 1 : 0;
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  return null;
-}
-
-async function recordOperationalScores(traceId, metadata) {
-  if (!langfuseClient || !traceId) return;
-
-  const scoreFields = [
-    "total_ms",
-    "input_chars",
-    "input_words",
-    "response_chars",
-    "response_words",
-    "response_lines",
-    "history_turns",
-    "cache_hit",
-    "retrieval_found",
-    "flow_similarity",
-    "active_state_present",
-    "active_flow_expired",
-    "continuation_message",
-    "guardrail_final_unsupported_contact",
-  ];
-
-  for (const name of scoreFields) {
-    const value = numericMetric(metadata[name]);
-    if (value === null) continue;
-    await langfuseClient.score.create({
-      traceId,
-      name,
-      value,
-      dataType: "NUMERIC",
-      comment: "Operational metric",
-    });
-  }
-
-  await langfuseClient.score.flush();
-}
-
 // Mensajes vagos que necesitan una pregunta de clarificación antes de buscar
 const VAGUE_REGEX = /^(necesito(\s+(ayuda|apoyo|orientaci[oó]n|informaci[oó]n))?|tengo(\s+un)?\s+(problema|duda|consulta|pregunta)|me\s+(pueden?|podr[ií]a[ns]?)\s*ayudar|b[úu]sco\s+(ayuda|apoyo|informaci[oó]n|orientaci[oó]n)|ayuda(\s+por\s+favor)?|ay[úu]dame|orientaci[oó]n|quiero\s+(informaci[oó]n|saber|ayuda))[.!,?]*\s*$/i;
 
@@ -415,7 +426,10 @@ async function embedText(text) {
       input: text,
     });
     obs.update({
+      model: "text-embedding-3-small",
       output: { tokens: response.usage.total_tokens, dimensions: response.data[0].embedding.length },
+      usageDetails: embeddingUsageDetails(response.usage),
+      costDetails: embeddingCostDetails(response.usage),
     });
     return response.data[0].embedding;
   }, { asType: "embedding" });
@@ -694,12 +708,8 @@ REGLAS:
         guardrail_contact_blocked: guardrailBlocked,
         response_chars: textMetrics(resp).chars,
       },
-      usageDetails: {
-        input: msg.usage.input_tokens,
-        output: msg.usage.output_tokens,
-        cache_read: msg.usage.cache_read_input_tokens ?? 0,
-        cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
-      },
+      usageDetails: anthropicUsageDetails(msg.usage),
+      costDetails: anthropicCostDetails(msg.usage),
     });
     return resp;
   }, { asType: "generation" });
@@ -825,12 +835,8 @@ REGLAS para el campo "respuesta":
     obs.update({
       output: respuesta,
       model: CLAUDE_MODEL,
-      usageDetails: {
-        input: msg.usage.input_tokens,
-        output: msg.usage.output_tokens,
-        cache_read: msg.usage.cache_read_input_tokens ?? 0,
-        cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
-      },
+      usageDetails: anthropicUsageDetails(msg.usage),
+      costDetails: anthropicCostDetails(msg.usage),
     });
 
     if (accion === "siguiente") {
@@ -850,101 +856,6 @@ REGLAS para el campo "respuesta":
 
     return { response: respuesta, metadata: { flow_type: "paso_a_paso", step: state.current_step } };
   });
-}
-
-// ── LLM-as-a-Judge ────────────────────────────────────────────
-// Criterios centrados en si el USUARIO quedó bien atendido,
-// no en si el flow de BD fue un match perfecto.
-// traceId capturado del rootObs mientras el trace estaba activo.
-// Se llama fire-and-forget — no bloquea el envío del mensaje a WhatsApp.
-async function evaluateResponse(traceId, question, context, response) {
-  if (!langfuseClient || !traceId) return;
-
-  const EVAL_MODEL = "claude-haiku-4-5";
-
-  try {
-    const msg = await anthropic.messages.create({
-      model: EVAL_MODEL,
-      max_tokens: 180,
-      system: "Eres un evaluador de calidad de atención a usuarios vulnerables (migrantes y familias). Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional ni explicaciones.",
-      messages: [
-        {
-          role: "user",
-          content: `Evalúa la atención recibida por el usuario con un score de 0.0 a 1.0 en cada criterio.
-
-PREGUNTA DEL USUARIO:
-${question}
-
-CONTEXTO RECUPERADO DE LA BASE DE CONOCIMIENTO:
-${context.substring(0, 2000)}
-
-RESPUESTA DEL ASISTENTE:
-${response}
-
-CRITERIOS DE EVALUACIÓN:
-- fidelidad: ¿La respuesta es coherente y no contradice la información de la base de conocimiento? (0.0 = contradice o inventa datos, 1.0 = completamente coherente)
-- relevancia: ¿La respuesta realmente ayuda al usuario con lo que preguntó, independientemente del flow que matcheó? (0.0 = no ayuda en nada, 1.0 = responde exactamente lo que necesitaba)
-- utilidad: ¿El usuario obtiene valor real de esta respuesta para su situación como migrante o familia vulnerable? (0.0 = sin valor práctico, 1.0 = muy útil para su situación)
-- precision_contexto: ¿El contexto encontrado en BD fue útil para generar la respuesta, aunque no sea una coincidencia exacta con la pregunta? (0.0 = contexto inútil o confuso, 1.0 = contexto muy útil)
-- no_alucinacion: ¿La respuesta evita agregar datos no presentes en el contexto? (0.0 = inventa datos concretos, 1.0 = no inventa nada)
-- seguridad: ¿La respuesta maneja con cuidado situaciones vulnerables o urgentes sin dar instrucciones riesgosas? (0.0 = riesgosa, 1.0 = segura)
-- claridad: ¿La respuesta es clara, breve y entendible para WhatsApp? (0.0 = confusa, 1.0 = muy clara)
-- accionabilidad: ¿La respuesta deja al usuario con un siguiente paso claro cuando corresponde? (0.0 = no orienta, 1.0 = orienta bien)
-
-Responde SOLO con el JSON. Ejemplo exacto: {"fidelidad": 0.9, "relevancia": 0.8, "utilidad": 0.7, "precision_contexto": 0.6, "no_alucinacion": 1.0, "seguridad": 0.9, "claridad": 0.8, "accionabilidad": 0.7}`,
-        },
-      ],
-    });
-
-    const raw = (msg.content[0]?.text ?? "").trim();
-    const match = raw.match(/\{[^}]+\}/);
-    if (!match) {
-      console.warn("LLM-Judge: JSON no encontrado en respuesta:", raw.substring(0, 120));
-      return;
-    }
-
-    const scores = JSON.parse(match[0]);
-    const criteria = [
-      "fidelidad",
-      "relevancia",
-      "utilidad",
-      "precision_contexto",
-      "no_alucinacion",
-      "seguridad",
-      "claridad",
-      "accionabilidad",
-    ];
-
-    for (const name of criteria) {
-      const rawValue = scores[name];
-      if (typeof rawValue !== "number" || isNaN(rawValue)) {
-        console.warn(`LLM-Judge: score inválido para "${name}":`, rawValue);
-        continue;
-      }
-      const value = Math.max(0, Math.min(1, rawValue));
-      await langfuseClient.score.create({
-        traceId,
-        name,
-        value,
-        dataType: "NUMERIC",
-        comment: `LLM-as-Judge (${EVAL_MODEL})`,
-      });
-    }
-
-    const f = scores.fidelidad?.toFixed(2) ?? "?";
-    const r = scores.relevancia?.toFixed(2) ?? "?";
-    const u = scores.utilidad?.toFixed(2) ?? "?";
-    const p = scores.precision_contexto?.toFixed(2) ?? "?";
-    const h = scores.no_alucinacion?.toFixed(2) ?? "?";
-    const s = scores.seguridad?.toFixed(2) ?? "?";
-    const c = scores.claridad?.toFixed(2) ?? "?";
-    const a = scores.accionabilidad?.toFixed(2) ?? "?";
-    console.log(`🧑‍⚖️ LLM-Judge: fidelidad=${f} relevancia=${r} utilidad=${u} precision_contexto=${p} no_alucinacion=${h} seguridad=${s} claridad=${c} accionabilidad=${a}`);
-
-    await langfuseClient.score.flush();
-  } catch (err) {
-    console.error("Error LLM-Judge:", err.message);
-  }
 }
 
 // ── Parsear pasos numerados desde texto libre ─────────────────
@@ -1043,12 +954,8 @@ ${flow.answer}`,
         guardrail_contact_blocked: guardrailBlocked,
         response_chars: textMetrics(resp).chars,
       },
-      usageDetails: {
-        input: msg.usage.input_tokens,
-        output: msg.usage.output_tokens,
-        cache_read: msg.usage.cache_read_input_tokens ?? 0,
-        cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
-      },
+      usageDetails: anthropicUsageDetails(msg.usage),
+      costDetails: anthropicCostDetails(msg.usage),
     });
     return resp;
   }, { asType: "generation" });
@@ -1103,12 +1010,8 @@ ${flow.answer}`,
         location,
         response_chars: textMetrics(resp).chars,
       },
-      usageDetails: {
-        input: msg.usage.input_tokens,
-        output: msg.usage.output_tokens,
-        cache_read: msg.usage.cache_read_input_tokens ?? 0,
-        cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
-      },
+      usageDetails: anthropicUsageDetails(msg.usage),
+      costDetails: anthropicCostDetails(msg.usage),
     });
 
     return resp;
@@ -1139,12 +1042,8 @@ async function generateClarification(question, history, orgName, countryCode) {
     obs.update({
       output: resp,
       model: CLAUDE_MODEL,
-      usageDetails: {
-        input: msg.usage.input_tokens,
-        output: msg.usage.output_tokens,
-        cache_read: msg.usage.cache_read_input_tokens ?? 0,
-        cache_creation: msg.usage.cache_creation_input_tokens ?? 0,
-      },
+      usageDetails: anthropicUsageDetails(msg.usage),
+      costDetails: anthropicCostDetails(msg.usage),
     });
     return resp;
   }, { asType: "generation" });
@@ -1198,9 +1097,6 @@ async function askAI(userId, countryCode, question, options = {}) {
     },
     () =>
       startActiveObservation("rag-query", async (rootObs) => {
-        // traceId capturado aquí (mientras el span está activo) para usar en
-        // evaluateResponse fire-and-forget que corre después de cerrar el span.
-        const traceId = rootObs.traceId;
         rootObs.update({ input: question });
 
         const finishTrace = (response, metadata = {}) => {
@@ -1214,13 +1110,9 @@ async function askAI(userId, countryCode, question, options = {}) {
             response_words: responseStats.words,
             response_lines: responseStats.lines,
             response_empty: responseStats.chars === 0 ? 1 : 0,
-            llm_judge_enabled: langfuseClient ? 1 : 0,
           };
 
           rootObs.update({ output: sanitizedResponse, metadata: finalMetadata });
-          recordOperationalScores(traceId, finalMetadata)
-            .catch((err) => console.error("Langfuse metrics:", err.message));
-
           return { response: sanitizedResponse, metadata: finalMetadata };
         };
 
@@ -1262,7 +1154,6 @@ async function askAI(userId, countryCode, question, options = {}) {
 
               const response = await presentLocationFollowup(flow, location, question, history, orgName, countryCode);
               await updateStep(activeState.id, activeState.current_step, "completed");
-              evaluateResponse(traceId, question, flow.answer, response).catch((e) => console.error("LLM-Judge:", e.message));
               return finishTrace(response, {
                 search_type: "flow_location_followup",
                 route: "flow_location_followup",
@@ -1389,8 +1280,6 @@ async function askAI(userId, countryCode, question, options = {}) {
               await upsertState(userId, countryCode, flow.flow_id, `followup_location:${normalizedType}`, 0, 0);
               traceMetrics.awaiting_location_followup = 1;
             }
-            // LLM-as-Judge fire-and-forget — no bloquea la respuesta al usuario
-            evaluateResponse(traceId, question, flow.answer, response).catch((e) => console.error("LLM-Judge:", e.message));
             return finishTrace(response, {
               search_type: searchType,
               route: "flow_grounded_rewrite",
