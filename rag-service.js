@@ -308,7 +308,18 @@ function guardGroundedContactInfo(response, sourceText, orgName) {
   if (!hasUnsupportedContactInfo(response, sourceText)) return response;
   console.warn("⚠️ Respuesta con contacto no presente en Excel; usando fallback seguro.");
   return String(sourceText || "").trim()
-    || `Gracias por contarme. En este momento no tengo un contacto especifico en la informacion disponible. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
+    || `Gracias por contarme. En este momento no cuento con un contacto especifico para orientarte por aqui. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
+}
+
+function sanitizeUserFacingResponse(response) {
+  return String(response || "")
+    .replace(/\s+(en|dentro de)\s+(el\s+)?Excel\b/gi, "")
+    .replace(/\b(seg[uú]n|de acuerdo con)\s+(la\s+)?informaci[oó]n disponible[,:\s]*/gi, "")
+    .replace(/\b(en|desde|dentro de)\s+(la\s+)?base de (conocimiento|datos)\b/gi, "")
+    .replace(/\b(la\s+)?respuesta fuente\b/gi, "la orientacion")
+    .replace(/\bfuente\s+(recuperada|consultada)\b/gi, "orientacion")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 function textMetrics(text) {
@@ -1003,6 +1014,7 @@ REGLAS ESTRICTAS:
 - Usa unicamente la informacion de RESPUESTA FUENTE.
 - No agregues instituciones, telefonos, numeros, correos, enlaces, ciudades, sedes, requisitos, beneficios ni canales que no aparezcan literalmente en RESPUESTA FUENTE.
 - Si la fuente pide un dato al usuario, conserva esa pregunta.
+- No digas "Excel", "base de datos", "base de conocimiento", "fuente", "respuesta fuente" ni "informacion disponible" al usuario.
 - Maximo 4 lineas. Sin markdown, listas ni emojis.`,
         },
       ],
@@ -1060,7 +1072,7 @@ REGLAS ESTRICTAS:
 - Responde usando únicamente RESPUESTA FUENTE y la ubicación que el usuario acaba de dar.
 - Puedes reconocer la ubicación del usuario.
 - No inventes instituciones, sedes, teléfonos, números, correos, enlaces ni servicios específicos si no aparecen literalmente en RESPUESTA FUENTE.
-- No digas "Excel", "base de datos" ni "base de conocimiento" al usuario.
+- No digas "Excel", "base de datos", "base de conocimiento", "fuente", "respuesta fuente" ni "informacion disponible" al usuario.
 - Maximo 4 lineas. Sin markdown, listas ni emojis.`,
         },
       ],
@@ -1080,7 +1092,7 @@ ${flow.answer}`,
     });
 
     const rawResponse = msg.content[0]?.text
-      || `Gracias por decirme que estas en ${location}. Segun la informacion disponible, tu caso requiere atencion prioritaria. Es importante que puedas acercarte o contactar lo antes posible con servicios de apoyo en tu localidad para recibir orientacion, proteccion y acompanamiento.`;
+      || `Gracias por decirme que estas en ${location}. Tu caso requiere atencion prioritaria. Es importante que puedas acercarte o contactar lo antes posible con servicios de apoyo en tu localidad para recibir orientacion, proteccion y acompanamiento.`;
     const resp = guardGroundedContactInfo(rawResponse, `${flow.answer}\n${location}`, orgName);
 
     obs.update({
@@ -1192,7 +1204,8 @@ async function askAI(userId, countryCode, question, options = {}) {
         rootObs.update({ input: question });
 
         const finishTrace = (response, metadata = {}) => {
-          const responseStats = textMetrics(response);
+          const sanitizedResponse = sanitizeUserFacingResponse(response);
+          const responseStats = textMetrics(sanitizedResponse);
           const finalMetadata = {
             ...traceMetrics,
             ...metadata,
@@ -1204,11 +1217,11 @@ async function askAI(userId, countryCode, question, options = {}) {
             llm_judge_enabled: langfuseClient ? 1 : 0,
           };
 
-          rootObs.update({ output: response, metadata: finalMetadata });
+          rootObs.update({ output: sanitizedResponse, metadata: finalMetadata });
           recordOperationalScores(traceId, finalMetadata)
             .catch((err) => console.error("Langfuse metrics:", err.message));
 
-          return { response, metadata: finalMetadata };
+          return { response: sanitizedResponse, metadata: finalMetadata };
         };
 
         // 0. FLUJO ACTIVO — se evalúa primero.
@@ -1422,7 +1435,7 @@ async function askAI(userId, countryCode, question, options = {}) {
 
         // 5. FALLBACK - solo Excel: sin flow recuperado no se llama al LLM.
         // Esto evita que el modelo invente telefonos, correos, sedes o links.
-        const noCtxResponse = `Gracias por contarme. En este momento no tengo informacion especifica para orientarte sobre eso. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
+        const noCtxResponse = `Gracias por contarme. En este momento no puedo orientarte con precision sobre eso por aqui. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
 
         return finishTrace(noCtxResponse, { search_type: "no_excel_match", route: "fallback_no_excel" });
       })
