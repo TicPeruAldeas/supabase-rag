@@ -31,8 +31,8 @@ async function main() {
   const { data, error } = await supabase.rpc("match_flows_by_country", {
     query_embedding: embeddingResponse.data[0].embedding,
     filter_country: countryCode,
-    match_count: 1,
-    min_similarity: 0.45,
+    match_count: 5,
+    min_similarity: 0.35,
   });
 
   if (error) {

@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check rag-service.js && node --check ingest-excel.js && node --check ask-ai.js && node --check test-query.js && node --check cache.js",
+    "check": "node --check server.js && node --check rag-service.js && node --check ingest-excel.js && node --check ask-ai.js && node --check test-query.js && node --check cache.js && node --check embedding-text.js",
     "test": "npm run check && node --test \"test/*.test.js\""
   },
   "keywords": [],

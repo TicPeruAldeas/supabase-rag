@@ -18,6 +18,7 @@ const crypto = require("crypto");
 const { createClient } = require("@supabase/supabase-js");
 const OpenAI = require("openai").default;
 const Anthropic = require("@anthropic-ai/sdk");
+const { buildFlowEmbeddingInput } = require("./embedding-text");
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -431,9 +432,15 @@ app.post("/ingest-row", async (req, res) => {
       .normalize("NFD").replace(/[̀-ͯ]/g, "");
 
     // Generar embedding con OpenAI (Anthropic no tiene API de embeddings)
+    const embeddingInput = buildFlowEmbeddingInput({
+      category: Categoria,
+      subtopic: Subtema,
+      question: Pregunta,
+      answer: Respuesta,
+    });
     const embeddingResponse = await openai.embeddings.create({
       model: "text-embedding-3-small",
-      input: Pregunta,
+      input: embeddingInput,
     });
     const embedding = embeddingResponse.data[0].embedding;
 

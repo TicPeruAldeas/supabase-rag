@@ -4,6 +4,7 @@ const { createClient } = require("@supabase/supabase-js");
 const OpenAI = require("openai").default;
 const XLSX = require("xlsx");
 const path = require("path");
+const { buildFlowEmbeddingInput } = require("./embedding-text");
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -79,8 +80,9 @@ async function processRow(row) {
 
   console.log(`\n📋 Procesando: ${flowId} [${flowType}]`);
 
-  // 1. Generar embedding de la pregunta
-  const embedding = await generateEmbedding(question);
+  // 1. Generar embedding del contenido completo del flow
+  const embeddingInput = buildFlowEmbeddingInput({ category, subtopic, question, answer });
+  const embedding = await generateEmbedding(embeddingInput);
 
   // 2. Upsert en knowledge_flows
   const { error: flowError } = await supabase

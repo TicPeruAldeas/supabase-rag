@@ -355,6 +355,10 @@ const COST_PER_MTOK = {
   embeddingInput: envNumber("OPENAI_EMBEDDING_USD_PER_MTOK", 0.02),
 };
 
+const FLOW_MATCH_COUNT = envNumber("FLOW_MATCH_COUNT", 5);
+const FLOW_MIN_SIMILARITY = envNumber("FLOW_MIN_SIMILARITY", 0.35);
+const FLOW_RERANK_HIGH_CONFIDENCE = envNumber("FLOW_RERANK_HIGH_CONFIDENCE", 0.72);
+
 function perMillion(tokens, usdPerMillion) {
   return ((tokens || 0) * usdPerMillion) / 1_000_000;
 }
@@ -590,30 +594,138 @@ async function searchFlow(countryCode, question) {
     obs.update({ input: question });
     const queryEmbedding = await embedText(question);
 
-    const result = await startActiveObservation("supabase-match-flows", async (dbObs) => {
-      dbObs.update({ input: { country: countryCode } });
+    const candidates = await startActiveObservation("supabase-match-flows", async (dbObs) => {
+      dbObs.update({ input: { country: countryCode, matchCount: FLOW_MATCH_COUNT, minSimilarity: FLOW_MIN_SIMILARITY } });
       const { data, error } = await supabase.rpc("match_flows_by_country", {
         query_embedding: queryEmbedding,
         filter_country: countryCode,
-        match_count: 1,
-        min_similarity: 0.45,
+        match_count: FLOW_MATCH_COUNT,
+        min_similarity: FLOW_MIN_SIMILARITY,
       });
       if (error) {
         dbObs.update({ output: { error: error.message } });
         throw error;
       }
-      const res = data?.[0] || null;
-      dbObs.update({ output: res ? { flow_id: res.flow_id, similarity: res.similarity } : null });
-      return res;
+      const results = data || [];
+      dbObs.update({
+        output: {
+          count: results.length,
+          candidates: results.map(item => ({
+            flow_id: item.flow_id,
+            flow_type: item.flow_type,
+            similarity: item.similarity,
+          })),
+        },
+      });
+      return results;
     });
 
+    const result = await chooseBestFlowCandidate(countryCode, question, candidates);
+
     obs.update({
-      output: result
-        ? { flow_id: result.flow_id, flow_type: result.flow_type, similarity: result.similarity }
-        : null,
+      output: {
+        selected: result
+          ? {
+            flow_id: result.flow_id,
+            flow_type: result.flow_type,
+            similarity: result.similarity,
+            reranked: !!result.reranked,
+          }
+          : null,
+        candidate_count: candidates.length,
+      },
     });
     return result;
   });
+}
+
+function truncateForRerank(text, maxChars = 900) {
+  const value = String(text || "").trim();
+  return value.length > maxChars ? `${value.slice(0, maxChars)}...` : value;
+}
+
+async function chooseBestFlowCandidate(countryCode, question, candidates) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return null;
+
+  const top = candidates[0];
+  if (candidates.length === 1 || (top.similarity ?? 0) >= FLOW_RERANK_HIGH_CONFIDENCE) {
+    return top;
+  }
+
+  return startActiveObservation("claude-flow-reranker", async (obs) => {
+    obs.update({
+      input: {
+        country: countryCode,
+        question,
+        highConfidence: FLOW_RERANK_HIGH_CONFIDENCE,
+        candidates: candidates.map(item => ({
+          flow_id: item.flow_id,
+          similarity: item.similarity,
+          flow_type: item.flow_type,
+        })),
+      },
+    });
+
+    const candidateText = candidates.map((item, index) => `
+CANDIDATO ${index + 1}
+flow_id: ${item.flow_id}
+similarity: ${item.similarity}
+tipo: ${item.flow_type}
+categoria: ${item.category ?? ""}
+subtema: ${item.subtopic ?? ""}
+pregunta: ${truncateForRerank(item.question, 500)}
+respuesta: ${truncateForRerank(item.answer, 900)}
+`.trim()).join("\n\n");
+
+    const msg = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 120,
+      temperature: 0,
+      system: `Eres un reranker estricto para un RAG. Debes elegir el candidato que mejor responde la intencion real del usuario.
+Responde SOLO JSON valido: {"flow_id":"...", "confidence":0.0}
+Si ningun candidato responde la intencion, usa {"flow_id":null, "confidence":0.0}.
+No elijas por coincidencias superficiales de palabras; prioriza significado, categoria, subtema y respuesta.`,
+      messages: [
+        {
+          role: "user",
+          content: `Pais: ${countryCode}
+Pregunta del usuario:
+${question}
+
+Candidatos:
+${candidateText}`,
+        },
+      ],
+    });
+
+    const raw = (msg.content[0]?.text ?? "").trim();
+    let selected = null;
+    let rejectedAll = false;
+    try {
+      const match = raw.match(/\{[\s\S]*\}/);
+      const parsed = match ? JSON.parse(match[0]) : null;
+      rejectedAll = parsed?.flow_id === null;
+      selected = candidates.find(item => item.flow_id === parsed?.flow_id) || null;
+      if (selected) selected = { ...selected, reranked: true, rerank_confidence: parsed.confidence ?? null };
+    } catch (err) {
+      console.warn("Reranker: respuesta invalida:", raw.substring(0, 120));
+    }
+
+    const result = rejectedAll ? null : (selected || top);
+    obs.update({
+      output: {
+        selected_flow_id: result?.flow_id ?? null,
+        selected_similarity: result?.similarity ?? null,
+        fallback_to_top: !selected && !rejectedAll,
+        rejected_all: rejectedAll,
+      },
+      model: CLAUDE_MODEL,
+      usageDetails: anthropicUsageDetails(msg.usage),
+      costDetails: anthropicCostDetails(msg.usage),
+    });
+
+    return result;
+  }, { asType: "generation" });
 }
 
 async function getFlowById(countryCode, flowId) {
@@ -1263,6 +1375,8 @@ async function askAI(userId, countryCode, question, options = {}) {
             normalized_flow_type: normalizedType,
             flow_similarity: flow.similarity ?? null,
             flow_similarity_bucket: similarityBucket(flow.similarity),
+            flow_reranked: flow.reranked ? 1 : 0,
+            flow_rerank_confidence: flow.rerank_confidence ?? null,
             flow_question_chars: textMetrics(flow.question).chars,
             flow_answer_chars: textMetrics(flow.answer).chars,
           });
