@@ -5,6 +5,21 @@ const OpenAI = require("openai").default;
 const Anthropic = require("@anthropic-ai/sdk");
 const { getCached, setCached } = require("./cache");
 
+// Mapa flow_id → URL de la fuente (generado del Excel por ingest-excel.js).
+// Se cita la fuente solo la PRIMERA vez que se toca un tema; mientras el tema
+// (misma URL) no cambie, no se repite el link. Si el archivo no existe aún,
+// el bot funciona igual pero sin citar fuentes.
+let SOURCE_LINKS = {};
+try {
+  SOURCE_LINKS = require("./source-links.json");
+} catch {
+  console.warn("ℹ️  source-links.json no encontrado — las respuestas no citarán fuente.");
+}
+
+function getSourceLink(flowId) {
+  return (flowId && SOURCE_LINKS[flowId]) || null;
+}
+
 // ── Langfuse v5: @langfuse/tracing usa OTel internamente ─────
 // Sin LangfuseSpanProcessor registrado los spans son no-ops — sin NOOP manual necesario.
 const {
@@ -260,7 +275,7 @@ const SMALL_TALK_REGEX = /^(hola+s?|buenos\s+(d[ií]as|tardes|noches)|buenas?(\s
 // "Sí", "ok", "listo", "luego qué hago", etc. nunca deben activar saludo.
 // El grupo final opcional admite cortesías/afirmaciones encadenadas como
 // "sí por favor", "si porfavor", "ya dale", "claro continúa", "ok gracias".
-const CONTINUATION_REGEX = /^(sí|si|no|listo|ok|okay|ya|correcto|entendido|no\s+s[eé]|todav[ií]a\s+no|quiero\s+continuar|continuar|continúa|continua|siguiente|el\s+siguiente|segundo\s+paso|el\s+segundo\s+paso|paso\s+\d+|adelante|claro|dale|de\s+acuerdo|por\s+supuesto|a[ú]n\s+no|bien|perfecto|genial|luego|luego\s+(que|qué)\s+hago|dime\s+m[aá]s|👍|✅|☑)(?:\s+(?:por\s*favor|porfa|claro|dale|gracias|adelante|continúa|continua|sí|si))?[.!,?\s]*$/i;
+const CONTINUATION_REGEX = /^(sí|si|listo|ok|okay|ya|correcto|entendido|quiero\s+continuar|continuar|continúa|continua|siguiente|el\s+siguiente|segundo\s+paso|el\s+segundo\s+paso|paso\s+\d+|adelante|claro|dale|de\s+acuerdo|por\s+supuesto|bien|perfecto|genial|luego|luego\s+(que|qué)\s+hago|dime\s+m[aá]s|👍|✅|☑)(?:\s+(?:por\s*favor|porfa|claro|dale|gracias|adelante|continúa|continua|sí|si))?[.!,?\s]*$/i;
 
 function isContinuationMessage(question) {
   return CONTINUATION_REGEX.test((question || "").trim());
@@ -274,6 +289,16 @@ const CLOSING_REGEX = /^(?:(?:muchas|mil|ok|okay|listo|perfecto|bien|excelente|g
 
 function isClosingMessage(question) {
   return CLOSING_REGEX.test((question || "").trim());
+}
+
+// Rechazo / declinación explícita ("no", "no gracias", "no quiero continuar",
+// "así está bien", "ya no", "suficiente"...). Dentro de un flujo paso a paso el
+// usuario pide DETENER, no avanzar. Se evalúa ANTES que la continuación para que
+// "no gracias" nunca haga avanzar de paso.
+const DECLINE_REGEX = /^(?:no|no,?\s+gracias|no\s+quiero(?:\s+(?:continuar|seguir|m[aá]s|nada))?|ya\s+no(?:\s+quiero)?|no\s+por\s+ahora|as[ií]\s+est[aá]\s+bien|est[aá]\s+bien\s+as[ií]|no\s+contin[uú]es?|no\s+sigas|suficiente|es\s+suficiente|ya\s+es\s+suficiente)[\s!.,]*$/i;
+
+function isDeclineMessage(question) {
+  return DECLINE_REGEX.test((question || "").trim());
 }
 
 const CONTACT_TOKEN_REGEX = /([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|https?:\/\/\S+|www\.\S+|\b(?:\+?\d[\d\s().-]{6,}\d)\b)/gi;
@@ -577,6 +602,31 @@ async function getRecentHistory(userId, countryCode, limit = 10, excludeLatestUs
   // Si por algún desfase el primer mensaje fuera del asistente, lo descartamos.
   const firstUser = messages.findIndex(m => m.role === "user");
   return firstUser > 0 ? messages.slice(firstUser) : messages;
+}
+
+// ── Última fuente citada ──────────────────────────────────────
+// Devuelve la URL de fuente del último turno del asistente que la tuviera.
+// Sirve para NO repetir el link mientras el usuario siga en el mismo tema
+// (misma URL). Se salta turnos sin fuente (saludos, cierres, clarificaciones)
+// para que un "gracias" intercalado no reinicie la cita.
+async function getLastCitedSource(userId, countryCode) {
+  const { data, error } = await supabase
+    .from("conversations")
+    .select("metadata")
+    .eq("user_id", userId)
+    .eq("country_code", countryCode)
+    .eq("role", "assistant")
+    .order("created_at", { ascending: false })
+    .limit(15);
+  if (error) {
+    console.error(`⚠️  getLastCitedSource [${userId}/${countryCode}]:`, error.message);
+    return null;
+  }
+  for (const row of data || []) {
+    const url = row.metadata?.source_url;
+    if (url) return url;
+  }
+  return null;
 }
 
 // ── Guardar turno ─────────────────────────────────────────────
@@ -1008,6 +1058,7 @@ REGLAS ESTRICTAS:
         },
       ],
       messages: [
+        ...history,
         {
           role: "user",
           content: `Pregunta del usuario:
@@ -1127,6 +1178,45 @@ async function generateClarification(question, history, orgName, countryCode) {
   }, { asType: "generation" });
 }
 
+// ── Reformulación con contexto ────────────────────────────────
+// Reescribe un mensaje de seguimiento ("¿y entonces qué hago?", "dice esas
+// palabras") como una pregunta autónoma usando el historial, para que la
+// búsqueda semántica no pierda el tema. Solo mejora el retrieval; la respuesta
+// sigue basándose únicamente en el contenido recuperado. Devuelve null si no
+// aporta (mensaje ya autónomo, sin historial, o error).
+async function condenseQuestion(question, history) {
+  if (!history || history.length === 0) return null;
+
+  return startActiveObservation("claude-condense-question", async (obs) => {
+    obs.update({ input: question });
+    try {
+      const msg = await anthropic.messages.create({
+        model: CLAUDE_MODEL,
+        max_tokens: 80,
+        temperature: 0,
+        system: `Reescribe el ÚLTIMO mensaje del usuario como una pregunta autónoma y breve en español, resolviendo referencias como "eso", "esas palabras", "y entonces", "y a qué edad" con el tema del historial.
+REGLAS:
+- NUNCA respondas la pregunta ni des información; tu única tarea es REESCRIBIRLA.
+- Devuelve SOLO la pregunta reformulada, sin comillas ni explicaciones.
+- Conserva la intención real; no agregues temas que el usuario no tocó.
+- Si el mensaje ya es una pregunta autónoma o no se relaciona con el historial, devuélvelo tal cual.`,
+        messages: [...history, { role: "user", content: question }],
+      });
+      const rewritten = (msg.content[0]?.text || "").trim().replace(/^["']|["']$/g, "");
+      obs.update({
+        output: rewritten,
+        model: CLAUDE_MODEL,
+        usageDetails: anthropicUsageDetails(msg.usage),
+        costDetails: anthropicCostDetails(msg.usage),
+      });
+      return rewritten || null;
+    } catch (err) {
+      console.error("⚠️  condenseQuestion:", err.message);
+      return null;
+    }
+  }, { asType: "generation" });
+}
+
 // ── Core RAG ──────────────────────────────────────────────────
 async function askAI(userId, countryCode, question, options = {}) {
   const totalStart = Date.now();
@@ -1177,8 +1267,21 @@ async function askAI(userId, countryCode, question, options = {}) {
       startActiveObservation("rag-query", async (rootObs) => {
         rootObs.update({ input: question });
 
+        // Cache de la última fuente citada (perezoso): se consulta una sola vez.
+        let lastCitedSource;
+        const getLastCited = async () => {
+          if (lastCitedSource === undefined) {
+            lastCitedSource = await getLastCitedSource(userId, countryCode);
+          }
+          return lastCitedSource;
+        };
+
         const finishTrace = (response, metadata = {}) => {
-          const sanitizedResponse = sanitizeUserFacingResponse(response);
+          let sanitizedResponse = sanitizeUserFacingResponse(response);
+          // Anexa la fuente solo cuando el tema cambió (cite_source_url definido).
+          if (metadata.cite_source_url) {
+            sanitizedResponse += `\n\nFuente: ${metadata.cite_source_url}`;
+          }
           const responseStats = textMetrics(sanitizedResponse);
           const finalMetadata = {
             ...traceMetrics,
@@ -1192,6 +1295,15 @@ async function askAI(userId, countryCode, question, options = {}) {
 
           rootObs.update({ output: sanitizedResponse, metadata: finalMetadata });
           return { response: sanitizedResponse, metadata: finalMetadata };
+        };
+
+        // Decide metadata de cita para un flow: siempre registra source_url (para
+        // el seguimiento de tema) y define cite_source_url solo si el tema cambió.
+        const buildSourceMeta = async (flowId) => {
+          const url = getSourceLink(flowId);
+          if (!url) return {};
+          const last = await getLastCited();
+          return { source_url: url, ...(url !== last ? { cite_source_url: url } : {}) };
         };
 
         // 0. FLUJO ACTIVO — se evalúa primero.
@@ -1232,11 +1344,13 @@ async function askAI(userId, countryCode, question, options = {}) {
 
               const response = await presentLocationFollowup(flow, location, question, history, orgName, countryCode);
               await updateStep(activeState.id, activeState.current_step, "completed");
+              const followupUrl = getSourceLink(flow.flow_id);
               return finishTrace(response, {
                 search_type: "flow_location_followup",
                 route: "flow_location_followup",
                 flow_id: flow.flow_id,
                 followup_location: location,
+                ...(followupUrl ? { source_url: followupUrl } : {}),
               });
             }
           }
@@ -1271,15 +1385,30 @@ async function askAI(userId, countryCode, question, options = {}) {
               step: activeState.current_step,
             });
 
+          } else if (isDeclineMessage(question)) {
+            // Rechazo explícito ("no", "no gracias"...) → cerrar el flujo sin avanzar.
+            console.log(`🚫 Rechazo dentro de flujo — finalizando sin avanzar: ${activeState.flow_id} paso ${activeState.current_step}`);
+            await updateStep(activeState.id, activeState.current_step, "completed");
+            const response = `¡Perfecto! Lo dejamos aquí. Si más adelante quieres retomar o tienes otra consulta, con gusto te oriento.`;
+            return finishTrace(response, {
+              search_type: "decline",
+              route: "active_flow_decline",
+              flow_id: activeState.flow_id,
+              step: activeState.current_step,
+            });
+
           } else if (isContinuationMessage(question)) {
             // Señal de continuación explícita → seguir el paso actual sin retrieval
             console.log(`▶️ Continuación del flujo: ${activeState.flow_id} paso ${activeState.current_step}/${activeState.total_steps}`);
             const result = await handlePasoAPaso(userId, countryCode, question, activeState);
             if (result) {
+              // Mismo tema: registra source_url para el seguimiento, sin volver a citar.
+              const stepUrl = getSourceLink(activeState.flow_id);
               return finishTrace(result.response, {
                 ...result.metadata,
                 search_type: "paso_a_paso",
                 route: "active_step_continuation",
+                ...(stepUrl ? { source_url: stepUrl } : {}),
               });
             }
             // accion "otro" → continúa al flujo normal
@@ -1322,10 +1451,12 @@ async function askAI(userId, countryCode, question, options = {}) {
               console.log(`↩️ Sin nueva intención — continuando: ${activeState.flow_id} paso ${activeState.current_step}`);
               const result = await handlePasoAPaso(userId, countryCode, question, activeState);
               if (result) {
+                const stepUrl = getSourceLink(activeState.flow_id);
                 return finishTrace(result.response, {
                   ...result.metadata,
                   search_type: "paso_a_paso",
                   route: "active_step_complex_message",
+                  ...(stepUrl ? { source_url: stepUrl } : {}),
                 });
               }
             }
@@ -1348,7 +1479,14 @@ async function askAI(userId, countryCode, question, options = {}) {
         const cached = getCached(countryCode, userId, question);
         if (cached) {
           traceMetrics.cache_hit = 1;
-          return finishTrace(cached, { search_type: "cache", route: "cache" });
+          // La cita se recalcula: aunque la respuesta esté cacheada, el link se
+          // incluye solo si el tema cambió respecto a la última fuente citada.
+          let citeMeta = {};
+          if (cached.sourceUrl) {
+            const last = await getLastCited();
+            citeMeta = { source_url: cached.sourceUrl, ...(cached.sourceUrl !== last ? { cite_source_url: cached.sourceUrl } : {}) };
+          }
+          return finishTrace(cached.value, { search_type: "cache", route: "cache", ...citeMeta });
         }
 
         // Historial disponible para todos los paths a partir de aquí
@@ -1363,7 +1501,23 @@ async function askAI(userId, countryCode, question, options = {}) {
 
         // 4. BUSCAR EN knowledge_flows (Excel)
         // Si ya se buscó en el paso 0 (cambio de intención detectado), reutilizar sin re-embeddings.
-        const flow = precomputedFlow ?? await searchFlow(countryCode, question);
+        let flow = precomputedFlow ?? await searchFlow(countryCode, question);
+
+        // 4.5 REINTENTO CON CONTEXTO — si no hubo match y hay historial, el
+        // mensaje puede ser un seguimiento ("y a qué edad", "y entonces qué hago").
+        // Reformulamos la pregunta con el historial y buscamos una vez más.
+        if (!flow && history.length > 0) {
+          const condensed = await condenseQuestion(question, history);
+          if (condensed && normalizeMessageText(condensed) !== normalizeMessageText(question)) {
+            traceMetrics.condensed_query = condensed;
+            const retried = await searchFlow(countryCode, condensed);
+            if (retried) {
+              flow = retried;
+              traceMetrics.condense_retry_hit = 1;
+              console.log(`🔁 Reintento con contexto: "${question}" → "${condensed}" → ${retried.flow_id}`);
+            }
+          }
+        }
 
         if (flow) {
           console.log(`📋 Flow: ${flow.flow_id} [${flow.flow_type}] sim: ${flow.similarity?.toFixed(3)}`);
@@ -1385,19 +1539,22 @@ async function askAI(userId, countryCode, question, options = {}) {
             const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode);
             const searchType = normalizedType === "informativa" ? "flow_informativa" : "flow_seleccion";
             traceMetrics.guardrail_final_unsupported_contact = hasUnsupportedContactInfo(response, flow.answer) ? 1 : 0;
+            const sourceMeta = await buildSourceMeta(flow.flow_id);
             if (sourceRequestsLocation(flow.answer)) {
               // No cachear: la próxima pregunta debe entrar al follow-up de ubicación,
               // no devolver la respuesta previa que aún pedía la ciudad.
               await upsertState(userId, countryCode, flow.flow_id, `followup_location:${normalizedType}`, 0, 0);
               traceMetrics.awaiting_location_followup = 1;
             } else {
-              setCached(countryCode, userId, question, response);
+              // Se cachea la respuesta BASE (sin link) + la fuente por separado.
+              setCached(countryCode, userId, question, response, getSourceLink(flow.flow_id));
             }
             return finishTrace(response, {
               search_type: searchType,
               route: "flow_grounded_rewrite",
               flow_id: flow.flow_id,
               tipo_respuesta: normalizedType,
+              ...sourceMeta,
             });
           }
 
@@ -1415,6 +1572,7 @@ async function askAI(userId, countryCode, question, options = {}) {
                 route: "flow_step_without_steps",
                 flow_id: flow.flow_id,
                 total_steps: 0,
+                ...(await buildSourceMeta(flow.flow_id)),
               });
             }
 
@@ -1425,12 +1583,14 @@ async function askAI(userId, countryCode, question, options = {}) {
               question, history, orgName, countryCode,
               allSteps: steps, currentStepNumber: 1,
             });
+            // La fuente se cita solo en el PRIMER paso (inicio del tema).
             return finishTrace(response, {
               search_type: "flow_paso_a_paso",
               route: "flow_step_start",
               flow_id: flow.flow_id,
               total_steps: steps.length,
               step: 1,
+              ...(await buildSourceMeta(flow.flow_id)),
             });
           }
         }
@@ -1452,4 +1612,5 @@ module.exports = {
   sanitizeUserFacingResponse,
   isContinuationMessage,
   isClosingMessage,
+  isDeclineMessage,
 };

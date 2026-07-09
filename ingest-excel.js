@@ -2,8 +2,10 @@ require("dotenv").config({ quiet: true });
 
 const { createClient } = require("@supabase/supabase-js");
 const OpenAI = require("openai").default;
+const Anthropic = require("@anthropic-ai/sdk");
 const XLSX = require("xlsx");
 const path = require("path");
+const fs = require("fs");
 const { buildFlowEmbeddingInput } = require("./embedding-text");
 
 const supabase = createClient(
@@ -12,6 +14,11 @@ const supabase = createClient(
 );
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+// Mismo modelo que la ingesta en vivo (server.js processStepsInBackground)
+// para que los resúmenes de pasos sean consistentes entre ambas rutas.
+const CLAUDE_MODEL = "claude-sonnet-4-6";
 
 const COUNTRY_CODE = process.argv[2] || "PE";
 const FILE_PATH = process.argv[3] || "./Plantilla_Nueva.xlsx";
@@ -37,21 +44,16 @@ function parseSteps(text) {
 
 // ── Generar resumen corto de un paso con IA ───────────────────
 async function generateStepSummary(stepText, stepNumber, totalSteps) {
-  const response = await openai.responses.create({
-    model: "gpt-4o-mini",
-    max_output_tokens: 60,
-    input: [
-      {
-        role: "system",
-        content: "Eres un asistente. Resume el siguiente paso en máximo 2 líneas cortas, claras y en español. Sin markdown. Sin asteriscos."
-      },
-      {
-        role: "user",
-        content: `Paso ${stepNumber} de ${totalSteps}:\n${stepText}`
-      }
-    ]
+  const response = await anthropic.messages.create({
+    model: CLAUDE_MODEL,
+    max_tokens: 100,
+    system: "Resume el siguiente paso en máximo 2 líneas cortas y claras en español. Sin markdown.",
+    messages: [{
+      role: "user",
+      content: `Paso ${stepNumber} de ${totalSteps}:\n${stepText}`,
+    }],
   });
-  return response.output_text.trim();
+  return response.content[0].text.trim();
 }
 
 // ── Generar embedding ─────────────────────────────────────────
@@ -160,6 +162,22 @@ async function main() {
   const rows = XLSX.utils.sheet_to_json(sheet);
 
   console.log(`📊 ${rows.length} filas encontradas\n`);
+
+  // Regenera el mapa flow_id → URL de fuente (columna "LINK: FUENTE"/"Enlace")
+  // que usa el bot para citar la fuente. Se escribe siempre para no
+  // desincronizarse; si el Excel no trae esa columna, queda un objeto vacío.
+  const sourceLinks = {};
+  for (const row of rows) {
+    const id = row["ID"]?.toString().trim();
+    const url = (row["LINK: FUENTE"] ?? row["Enlace"] ?? "").toString().trim();
+    if (id && url) sourceLinks[id] = url;
+  }
+  fs.writeFileSync(
+    path.resolve(__dirname, "source-links.json"),
+    JSON.stringify(sourceLinks, null, 2) + "\n",
+    "utf8"
+  );
+  console.log(`🔗 source-links.json actualizado: ${Object.keys(sourceLinks).length} fuentes\n`);
 
   for (const row of rows) {
     await processRow(row);

@@ -20,6 +20,9 @@ function sweepExpired(now) {
   }
 }
 
+// Devuelve { value, sourceUrl } o null. Se guarda la respuesta BASE (sin el
+// link) y su fuente por separado: la decisión de citar o no se toma en cada
+// consulta según el tema anterior, no se "pega" en el texto cacheado.
 function getCached(countryCode, userId, question) {
   const key = getCacheKey(countryCode, userId, question);
   const item = cache.get(key);
@@ -30,10 +33,10 @@ function getCached(countryCode, userId, question) {
     return null;
   }
 
-  return item.value;
+  return { value: item.value, sourceUrl: item.sourceUrl || null };
 }
 
-function setCached(countryCode, userId, question, value) {
+function setCached(countryCode, userId, question, value, sourceUrl = null) {
   // Barrido perezoso para evitar crecimiento ilimitado de memoria.
   if (cache.size >= MAX_ENTRIES) {
     const now = Date.now();
@@ -47,6 +50,7 @@ function setCached(countryCode, userId, question, value) {
 
   cache.set(getCacheKey(countryCode, userId, question), {
     value,
+    sourceUrl,
     createdAt: Date.now(),
   });
 }

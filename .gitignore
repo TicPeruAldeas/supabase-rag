@@ -1,3 +1,10 @@
 node_modules
 .env
 .claude/
+
+# Presentaciones generadas (no forman parte del runtime)
+outputs/
+tools/*.pptx
+
+# Respaldos locales de Excel
+files/*.original.xlsx

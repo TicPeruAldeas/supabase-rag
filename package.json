@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check rag-service.js && node --check ingest-excel.js && node --check ask-ai.js && node --check test-query.js && node --check cache.js && node --check embedding-text.js",
+    "check": "node --check server.js && node --check rag-service.js && node --check admin.js && node --check ingest-excel.js && node --check ask-ai.js && node --check test-query.js && node --check cache.js && node --check embedding-text.js",
     "test": "npm run check && node --test \"test/*.test.js\""
   },
   "keywords": [],
@@ -22,5 +22,8 @@
     "express": "^5.2.1",
     "openai": "^6.34.0",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "pptxgenjs": "^4.0.1"
   }
 }

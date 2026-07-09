@@ -14,6 +14,7 @@ const {
   sanitizeUserFacingResponse,
   isContinuationMessage,
   isClosingMessage,
+  isDeclineMessage,
 } = require("../rag-service");
 
 test("hasUnsupportedContactInfo: detecta teléfono ausente en la fuente", () => {
@@ -111,5 +112,17 @@ test("isClosingMessage: reconoce agradecimientos y despedidas", () => {
 test("isClosingMessage: no marca preguntas reales como cierre", () => {
   for (const msg of ["gracias, pero dónde queda la sede?", "necesito ayuda", "qué documentos necesito"]) {
     assert.strictEqual(isClosingMessage(msg), false, `"${msg}" no debería ser cierre`);
+  }
+});
+
+test("isDeclineMessage: reconoce rechazos explícitos", () => {
+  for (const msg of ["no", "no gracias", "no quiero continuar", "ya no", "así está bien", "suficiente", "no por ahora"]) {
+    assert.strictEqual(isDeclineMessage(msg), true, `"${msg}" debería ser rechazo`);
+  }
+});
+
+test("isDeclineMessage: no marca continuaciones ni preguntas como rechazo", () => {
+  for (const msg of ["sí", "siguiente", "no sé cómo hacerlo", "no tengo el documento, qué hago"]) {
+    assert.strictEqual(isDeclineMessage(msg), false, `"${msg}" no debería ser rechazo`);
   }
 });

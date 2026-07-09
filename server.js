@@ -168,6 +168,88 @@ async function sendWhatsAppMessage(to, message, phoneNumberId, token) {
   return data;
 }
 
+// ── Enviar mensaje interactivo con botones (WhatsApp) ─────────
+async function sendWhatsAppButton(to, bodyText, buttons, phoneNumberId, token) {
+  const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: bodyText },
+        action: { buttons: buttons.map((b) => ({ type: "reply", reply: b })) },
+      },
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(JSON.stringify(data));
+  return data;
+}
+
+// ── Consentimiento (pantalla "Continuar" al iniciar conversación) ──
+// Se pide al inicio de cada CONVERSACIÓN nueva: si el usuario no aceptó dentro
+// de la ventana de sesión, se muestra la tarjeta con el botón Continuar y no se
+// procesa la consulta hasta que acepte. El consentimiento se registra como un
+// turno role="system" (invisible al historial/citas) con event=consent_accepted.
+const CONSENT_SESSION_MS = (Number(process.env.CONSENT_SESSION_HOURS) || 24) * 60 * 60 * 1000;
+const CONSENT_BUTTON_ID = "consent_continue";
+const CONSENT_TEXT_REGEX = /^\s*(continuar|acepto|aceptar|s[ií][\s,]+acepto|de acuerdo|estoy de acuerdo)\b/i;
+
+function isConsentAcceptance(buttonId, text) {
+  return buttonId === CONSENT_BUTTON_ID || CONSENT_TEXT_REGEX.test(text || "");
+}
+
+function buildConsentText(userName) {
+  const saludo = userName ? `Hola ${userName}` : "Hola";
+  return `${saludo}, soy el asistente virtual de Aldeas Infantiles SOS. Estoy aquí para orientarte sobre nuestros programas y servicios. Recuerda que tus consultas son confidenciales y se tratan con los estándares de seguridad y privacidad de la organización.\n\nPor favor, presiona el botón "Continuar" para comenzar 👇`;
+}
+
+async function hasRecentConsent(userId, countryCode) {
+  const cutoff = new Date(Date.now() - CONSENT_SESSION_MS).toISOString();
+  const { data, error } = await supabase
+    .from("conversations")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("country_code", countryCode)
+    .contains("metadata", { event: "consent_accepted" })
+    .gte("created_at", cutoff)
+    .limit(1);
+  if (error) {
+    // Ante un error de BD no bloqueamos al usuario (fail-open).
+    console.error(`⚠️  hasRecentConsent [${userId}/${countryCode}]:`, error.message);
+    return true;
+  }
+  return (data || []).length > 0;
+}
+
+async function recordConsent(userId, countryCode, incomingPhoneNumberId) {
+  await saveConversationTurn({
+    userId,
+    countryCode,
+    role: "system",
+    message: "consent_accepted",
+    source: "whatsapp",
+    metadata: { event: "consent_accepted", phone_number_id: incomingPhoneNumberId },
+  }).catch((err) => console.error("Error guardando consentimiento:", err.message));
+}
+
+async function sendConsentCard(to, userName, phoneNumberId, token) {
+  await sendWhatsAppButton(
+    to,
+    buildConsentText(userName),
+    [{ id: CONSENT_BUTTON_ID, title: "Continuar" }],
+    phoneNumberId,
+    token
+  );
+}
+
 // ── Procesar pasos "paso a paso" en background ────────────────
 // Se ejecuta fuera del ciclo request/response de /ingest-row para no exceder
 // el timeout del webhook (Make): cada paso requiere una llamada a Claude.
@@ -219,6 +301,9 @@ async function processStepsInBackground(flowId, answer, countryCode) {
 
   console.log(`✅ ${steps.length} pasos procesados en background [${flowId}]`);
 }
+
+// ── Panel de administración (visor de conversaciones) ─────────
+app.use("/admin", require("./admin")(supabase));
 
 // ── Verificación Meta ─────────────────────────────────────────
 app.get("/webhook", (req, res) => {
@@ -312,6 +397,61 @@ async function handleIncomingMessage({ from, text, countryCode, phoneNumberId, t
   }
 }
 
+// ── Gate de consentimiento + ruteo del mensaje ────────────────
+// 1. Si el mensaje es la aceptación (botón Continuar o "acepto"): registra el
+//    consentimiento y da la bienvenida.
+// 2. Si no hay consentimiento vigente en la sesión: envía la tarjeta Continuar
+//    y NO procesa la consulta todavía.
+// 3. Si ya consintió: procesa el mensaje normalmente.
+async function handleConsentGate({ from, text, buttonId, userName, countryCode, phoneNumberId, token, messageId, incomingPhoneNumberId }) {
+  // Texto que representa lo que envió el usuario (un botón sin texto = "Continuar").
+  const inbound = text || (buttonId ? "Continuar" : "");
+  try {
+    if (isConsentAcceptance(buttonId, text)) {
+      // Guarda el "Continuar" del usuario para que aparezca en el historial/panel.
+      await saveConversationTurn({
+        userId: from, countryCode, role: "user", message: inbound, source: "whatsapp",
+        metadata: { event: "consent_accept", wa_message_id: messageId, phone_number_id: incomingPhoneNumberId },
+      }).catch((err) => console.error("Error guardando aceptación:", err.message));
+
+      await recordConsent(from, countryCode, incomingPhoneNumberId);
+      const saludo = userName ? `¡Gracias, ${userName}!` : "¡Gracias!";
+      const welcome = `${saludo} Soy el asistente virtual de Aldeas Infantiles SOS. Cuéntame en qué puedo orientarte hoy —sobre nuestros programas, servicios o cómo acceder a ellos.`;
+      await sendWhatsAppMessage(from, welcome, phoneNumberId, token);
+      await saveConversationTurn({
+        userId: from, countryCode, role: "assistant", message: welcome, source: "whatsapp",
+        metadata: { event: "consent_welcome", phone_number_id: incomingPhoneNumberId },
+      }).catch((err) => console.error("Error guardando bienvenida:", err.message));
+      console.log(`✅ [${countryCode}] ${from} aceptó el consentimiento`);
+      return;
+    }
+
+    if (!(await hasRecentConsent(from, countryCode))) {
+      // Guarda el mensaje del usuario y la tarjeta para reflejar el hilo completo.
+      if (inbound) {
+        await saveConversationTurn({
+          userId: from, countryCode, role: "user", message: inbound, source: "whatsapp",
+          metadata: { event: "incoming_whatsapp_message", wa_message_id: messageId, phone_number_id: incomingPhoneNumberId },
+        }).catch((err) => console.error("Error guardando entrante:", err.message));
+      }
+      const card = buildConsentText(userName);
+      await sendConsentCard(from, userName, phoneNumberId, token);
+      await saveConversationTurn({
+        userId: from, countryCode, role: "assistant", message: card, source: "whatsapp",
+        metadata: { event: "consent_prompt", phone_number_id: incomingPhoneNumberId },
+      }).catch((err) => console.error("Error guardando tarjeta:", err.message));
+      console.log(`📋 [${countryCode}] ${from} — tarjeta de consentimiento enviada`);
+      return;
+    }
+
+    // Ya consintió: procesa solo si hay texto (handleIncomingMessage guarda los turnos).
+    if (!text) return;
+    await handleIncomingMessage({ from, text, countryCode, phoneNumberId, token, messageId, incomingPhoneNumberId });
+  } catch (err) {
+    console.error("❌ Error en gate de consentimiento:", err.message);
+  }
+}
+
 // ── Mensajes entrantes ────────────────────────────────────────
 app.post("/webhook", (req, res) => {
   // Rechaza cualquier POST que no esté firmado por Meta con el App Secret.
@@ -338,9 +478,12 @@ app.post("/webhook", (req, res) => {
 
   const { countryCode, phoneNumberId, token } = countryConfig;
   const from = message.from;
+  const userName = value?.contacts?.[0]?.profile?.name || null;
   const text = message.text?.body;
+  // Respuesta a un botón/lista interactiva (p. ej. el botón "Continuar").
+  const buttonId = message.interactive?.button_reply?.id || message.interactive?.list_reply?.id || null;
 
-  if (!text) return;
+  if (!text && !buttonId) return;
 
   // Descarta mensajes viejos: tras un redeploy, el dedup en memoria se borra y
   // Meta puede reentregar webhooks pendientes de mensajes antiguos. El timestamp
@@ -360,9 +503,11 @@ app.post("/webhook", (req, res) => {
 
   // Serializa por usuario: los mensajes del mismo número se procesan en orden.
   runSerialized(`${countryCode}:${from}`, () =>
-    handleIncomingMessage({
+    handleConsentGate({
       from,
       text,
+      buttonId,
+      userName,
       countryCode,
       phoneNumberId,
       token,

@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Aldeas · Conversaciones</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root {
+      --green:#075e54; --green2:#128c7e; --bubble-user:#d9fdd3; --bubble-bot:#ffffff;
+      --chat-bg:#efeae2; --side-bg:#ffffff; --line:#e6e6e6; --muted:#667781; --text:#111b21;
+    }
+    html,body { height:100%; margin:0; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:var(--text); }
+    .app { display:flex; height:100vh; }
+    /* Sidebar */
+    .side { width:340px; min-width:280px; border-right:1px solid var(--line); background:var(--side-bg); display:flex; flex-direction:column; }
+    .side-head { background:var(--green); color:#fff; padding:14px 16px; display:flex; align-items:center; justify-content:space-between; }
+    .side-head h1 { font-size:16px; margin:0; font-weight:600; }
+    .side-head button { background:rgba(255,255,255,.2); color:#fff; border:0; border-radius:6px; padding:6px 10px; cursor:pointer; font-size:13px; }
+    .search { padding:8px; border-bottom:1px solid var(--line); }
+    .search input { width:100%; padding:8px 12px; border:1px solid var(--line); border-radius:20px; font-size:14px; outline:none; }
+    .users { overflow-y:auto; flex:1; }
+    .user { display:flex; gap:10px; padding:10px 14px; border-bottom:1px solid #f2f2f2; cursor:pointer; align-items:center; }
+    .user:hover { background:#f5f5f5; }
+    .user.active { background:#e9f3f1; }
+    .avatar { width:42px; height:42px; border-radius:50%; background:var(--green2); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; flex-shrink:0; }
+    .user-main { flex:1; min-width:0; }
+    .user-top { display:flex; justify-content:space-between; gap:8px; }
+    .user-name { font-weight:600; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .user-time { font-size:11px; color:var(--muted); flex-shrink:0; }
+    .user-snippet { font-size:13px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .badge { background:var(--green2); color:#fff; border-radius:10px; font-size:11px; padding:1px 7px; }
+    /* Chat */
+    .chat { flex:1; display:flex; flex-direction:column; background:var(--chat-bg); }
+    .chat-head { background:#f0f2f5; border-bottom:1px solid var(--line); padding:12px 18px; display:flex; align-items:center; gap:10px; }
+    .chat-head .avatar { width:38px; height:38px; }
+    .chat-head .title { font-weight:600; font-size:15px; }
+    .chat-head .sub { font-size:12px; color:var(--muted); }
+    .messages { flex:1; overflow-y:auto; padding:20px 8%; display:flex; flex-direction:column; gap:8px; }
+    .row { display:flex; }
+    .row.user { justify-content:flex-end; }
+    .row.assistant { justify-content:flex-start; }
+    .bubble { max-width:72%; padding:8px 11px; border-radius:8px; font-size:14px; line-height:1.4; box-shadow:0 1px .5px rgba(0,0,0,.08); white-space:pre-wrap; word-wrap:break-word; }
+    .row.user .bubble { background:var(--bubble-user); border-top-right-radius:2px; }
+    .row.assistant .bubble { background:var(--bubble-bot); border-top-left-radius:2px; }
+    .bubble .time { display:block; font-size:10.5px; color:var(--muted); text-align:right; margin-top:4px; }
+    .meta { font-size:10.5px; color:var(--muted); margin-top:3px; }
+    .meta a { color:var(--green2); }
+    .empty { flex:1; display:flex; align-items:center; justify-content:center; color:var(--muted); text-align:center; padding:20px; }
+    .day { align-self:center; background:#fff; color:var(--muted); font-size:11px; padding:4px 10px; border-radius:8px; margin:6px 0; box-shadow:0 1px .5px rgba(0,0,0,.08); }
+    @media (max-width:640px){ .side{width:100%;} .chat{display:none;} .app.show-chat .side{display:none;} .app.show-chat .chat{display:flex;} }
+  </style>
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="side">
+      <div class="side-head">
+        <h1>💬 Aldeas · Conversaciones</h1>
+        <button id="refresh" title="Actualizar">↻</button>
+      </div>
+      <div class="search"><input id="search" placeholder="Buscar número…" /></div>
+      <div class="users" id="users"><div class="empty">Cargando…</div></div>
+    </aside>
+    <main class="chat">
+      <div class="chat-head" id="chatHead" style="display:none;">
+        <div class="avatar" id="chatAvatar"></div>
+        <div><div class="title" id="chatTitle"></div><div class="sub" id="chatSub"></div></div>
+      </div>
+      <div class="messages" id="messages"><div class="empty">Selecciona una persona para ver la conversación.</div></div>
+    </main>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let allUsers = [];
+    let current = null;
+
+    function fmtTime(iso){ try{ return new Date(iso).toLocaleString("es-PE",{hour:"2-digit",minute:"2-digit"}); }catch{ return ""; } }
+    function fmtDay(iso){ try{ return new Date(iso).toLocaleDateString("es-PE",{weekday:"long",day:"numeric",month:"long"}); }catch{ return ""; } }
+    function initials(num){ const d=String(num).replace(/\D/g,""); return d.slice(-2) || "?"; }
+    function linkify(text){
+      const frag=document.createDocumentFragment();
+      const re=/(https?:\/\/[^\s]+)/g; let last=0,m;
+      while((m=re.exec(text))){
+        if(m.index>last) frag.appendChild(document.createTextNode(text.slice(last,m.index)));
+        const a=document.createElement("a"); a.href=m[0]; a.target="_blank"; a.rel="noopener"; a.textContent=m[0];
+        frag.appendChild(a); last=m.index+m[0].length;
+      }
+      if(last<text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+      return frag;
+    }
+
+    async function loadUsers(){
+      $("users").innerHTML='<div class="empty">Cargando…</div>';
+      try{
+        const r=await fetch("/admin/api/users"); if(!r.ok) throw new Error(r.status);
+        const j=await r.json(); allUsers=j.users||[];
+        renderUsers();
+      }catch(e){ $("users").innerHTML='<div class="empty">Error cargando ('+e.message+')</div>'; }
+    }
+
+    function renderUsers(){
+      const q=$("search").value.trim().toLowerCase();
+      const list=allUsers.filter(u=>u.user_id.toLowerCase().includes(q));
+      if(!list.length){ $("users").innerHTML='<div class="empty">Sin conversaciones.</div>'; return; }
+      const box=document.createElement("div");
+      for(const u of list){
+        const el=document.createElement("div");
+        el.className="user"+(current&&current.user_id===u.user_id&&current.country_code===u.country_code?" active":"");
+        el.onclick=()=>openThread(u);
+        const av=document.createElement("div"); av.className="avatar"; av.textContent=initials(u.user_id);
+        const main=document.createElement("div"); main.className="user-main";
+        const top=document.createElement("div"); top.className="user-top";
+        const name=document.createElement("div"); name.className="user-name"; name.textContent="+"+u.user_id+" ("+u.country_code+")";
+        const time=document.createElement("div"); time.className="user-time"; time.textContent=fmtTime(u.last_at);
+        top.append(name,time);
+        const snip=document.createElement("div"); snip.className="user-snippet";
+        snip.textContent=(u.last_role==="assistant"?"Asistente: ":"")+(u.last_message||"").replace(/\n/g," ");
+        main.append(top,snip);
+        el.append(av,main);
+        box.appendChild(el);
+      }
+      $("users").innerHTML=""; $("users").appendChild(box);
+    }
+
+    async function openThread(u){
+      current=u; renderUsers();
+      $("app").classList.add("show-chat");
+      $("chatHead").style.display="flex";
+      $("chatAvatar").textContent=initials(u.user_id);
+      $("chatTitle").textContent="+"+u.user_id;
+      $("chatSub").textContent=u.country_code+" · "+u.count+" mensajes";
+      $("messages").innerHTML='<div class="empty">Cargando…</div>';
+      try{
+        const r=await fetch("/admin/api/thread?user="+encodeURIComponent(u.user_id)+"&country="+encodeURIComponent(u.country_code));
+        if(!r.ok) throw new Error(r.status);
+        const j=await r.json(); renderThread(j.turns||[]);
+      }catch(e){ $("messages").innerHTML='<div class="empty">Error ('+e.message+')</div>'; }
+    }
+
+    function renderThread(turns){
+      const wrap=document.createElement("div"); wrap.style.display="contents";
+      let lastDay="";
+      if(!turns.length){ $("messages").innerHTML='<div class="empty">Sin mensajes.</div>'; return; }
+      for(const t of turns){
+        const day=fmtDay(t.created_at);
+        if(day!==lastDay){ const d=document.createElement("div"); d.className="day"; d.textContent=day; wrap.appendChild(d); lastDay=day; }
+        const row=document.createElement("div"); row.className="row "+t.role;
+        const b=document.createElement("div"); b.className="bubble";
+        b.appendChild(linkify(t.message||""));
+        const time=document.createElement("span"); time.className="time"; time.textContent=fmtTime(t.created_at);
+        b.appendChild(time);
+        // Meta bajo respuestas del asistente
+        if(t.role==="assistant" && t.metadata){
+          const m=t.metadata; const bits=[];
+          if(m.route) bits.push(m.route);
+          if(m.flow_id) bits.push(m.flow_id);
+          if(m.cite_source_url) bits.push("citó fuente");
+          if(bits.length){ const meta=document.createElement("div"); meta.className="meta"; meta.textContent=bits.join(" · "); b.appendChild(meta); }
+        }
+        row.appendChild(b); wrap.appendChild(row);
+      }
+      $("messages").innerHTML=""; $("messages").appendChild(wrap);
+      $("messages").scrollTop=$("messages").scrollHeight;
+    }
+
+    $("search").addEventListener("input", renderUsers);
+    $("refresh").addEventListener("click", ()=>{ loadUsers(); if(current) openThread(current); });
+    loadUsers();
+  </script>
+</body>
+</html>
