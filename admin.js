@@ -4,6 +4,21 @@
 const path = require("path");
 const crypto = require("crypto");
 const express = require("express");
+const XLSX = require("xlsx");
+
+// Fecha legible en hora de Colombia/Perú (UTC-5). Si el entorno no soporta
+// zonas horarias, cae a los primeros 16 caracteres del ISO.
+function fmtFecha(iso) {
+  try {
+    return new Date(iso).toLocaleString("es-CO", {
+      timeZone: "America/Bogota",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    });
+  } catch {
+    return String(iso || "").replace("T", " ").slice(0, 16);
+  }
+}
 
 function safeEqual(a, b) {
   const ba = Buffer.from(String(a || ""));
@@ -82,6 +97,45 @@ module.exports = function createAdminRouter(supabase) {
     if (error) return res.status(500).json({ error: error.message });
 
     res.json({ user, country, turns: data });
+  });
+
+  // ── Exportar el hilo completo a Excel ──
+  router.get("/api/export", async (req, res) => {
+    const user = req.query.user;
+    const country = req.query.country || "PE";
+    if (!user) return res.status(400).json({ error: "Falta el parámetro user" });
+
+    const { data, error } = await supabase
+      .from("conversations")
+      .select("role,message,created_at,source,metadata")
+      .eq("user_id", user)
+      .eq("country_code", country)
+      .in("role", ["user", "assistant"])
+      .order("created_at", { ascending: true })
+      .limit(10000);
+    if (error) return res.status(500).json({ error: error.message });
+
+    const rows = (data || []).map((t) => ({
+      "Fecha y hora": fmtFecha(t.created_at),
+      "Rol": t.role === "assistant" ? "Asistente" : "Usuario",
+      "Mensaje": t.message || "",
+      "Canal": t.source || "",
+      "Ruta": t.metadata?.route || "",
+      "Flow": t.metadata?.flow_id || "",
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(rows, {
+      header: ["Fecha y hora", "Rol", "Mensaje", "Canal", "Ruta", "Flow"],
+    });
+    ws["!cols"] = [{ wch: 18 }, { wch: 10 }, { wch: 90 }, { wch: 10 }, { wch: 24 }, { wch: 16 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Conversacion");
+    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+    const safeUser = String(user).replace(/[^\dA-Za-z]/g, "");
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="chat_${country}_${safeUser}.xlsx"`);
+    res.send(buf);
   });
 
   return router;
