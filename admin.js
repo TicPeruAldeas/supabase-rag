@@ -20,6 +20,35 @@ function fmtFecha(iso) {
   }
 }
 
+// Traduce los códigos internos de ruta/evento a etiquetas legibles para el Excel.
+const ROUTE_LABELS = {
+  small_talk: "Saludo",
+  closing: "Despedida",
+  cache: "Respuesta en caché",
+  clarification: "Pregunta de aclaración",
+  flow_grounded_rewrite: "Respuesta de la base de conocimiento",
+  flow_step_start: "Inicio de guía paso a paso",
+  flow_step_without_steps: "Respuesta paso a paso",
+  flow_location_followup: "Respuesta según la ciudad",
+  fallback_no_excel: "Sin coincidencia en la base",
+  active_flow_smalltalk: "Saludo (durante una guía)",
+  active_flow_closing: "Despedida (durante una guía)",
+  active_flow_decline: "El usuario decidió no continuar",
+  active_step_continuation: "Siguiente paso de la guía",
+  active_step_complex_message: "Consulta durante una guía",
+};
+const EVENT_LABELS = {
+  consent_prompt: "Solicitud de consentimiento",
+  consent_welcome: "Mensaje de bienvenida",
+  consent_accept: "Aceptó el consentimiento",
+};
+
+function tipoRespuesta(md = {}) {
+  if (md.route) return ROUTE_LABELS[md.route] || md.route;
+  if (md.event) return EVENT_LABELS[md.event] || "";
+  return "";
+}
+
 function safeEqual(a, b) {
   const ba = Buffer.from(String(a || ""));
   const bb = Buffer.from(String(b || ""));
@@ -120,14 +149,14 @@ module.exports = function createAdminRouter(supabase) {
       "Rol": t.role === "assistant" ? "Asistente" : "Usuario",
       "Mensaje": t.message || "",
       "Canal": t.source || "",
-      "Ruta": t.metadata?.route || "",
-      "Flow": t.metadata?.flow_id || "",
+      "Tipo de respuesta": tipoRespuesta(t.metadata),
+      "ID de contenido": t.metadata?.flow_id || "",
     }));
 
     const ws = XLSX.utils.json_to_sheet(rows, {
-      header: ["Fecha y hora", "Rol", "Mensaje", "Canal", "Ruta", "Flow"],
+      header: ["Fecha y hora", "Rol", "Mensaje", "Canal", "Tipo de respuesta", "ID de contenido"],
     });
-    ws["!cols"] = [{ wch: 18 }, { wch: 10 }, { wch: 90 }, { wch: 10 }, { wch: 24 }, { wch: 16 }];
+    ws["!cols"] = [{ wch: 18 }, { wch: 10 }, { wch: 90 }, { wch: 10 }, { wch: 34 }, { wch: 16 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Conversacion");
     const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
