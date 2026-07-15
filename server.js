@@ -213,12 +213,16 @@ function buildConsentText(userName) {
 
 async function hasRecentConsent(userId, countryCode) {
   const cutoff = new Date(Date.now() - CONSENT_SESSION_MS).toISOString();
+  // El consentimiento se detecta por el turno de aceptación del usuario
+  // (event=consent_accept, role="user"). La tabla `conversations` de Aldeas
+  // solo admite roles user/assistant (constraint conversations_role_check), por
+  // eso NO se usa un turno role="system" como marcador.
   const { data, error } = await supabase
     .from("conversations")
     .select("id")
     .eq("user_id", userId)
     .eq("country_code", countryCode)
-    .contains("metadata", { event: "consent_accepted" })
+    .contains("metadata", { event: "consent_accept" })
     .gte("created_at", cutoff)
     .limit(1);
   if (error) {
@@ -227,17 +231,6 @@ async function hasRecentConsent(userId, countryCode) {
     return true;
   }
   return (data || []).length > 0;
-}
-
-async function recordConsent(userId, countryCode, incomingPhoneNumberId) {
-  await saveConversationTurn({
-    userId,
-    countryCode,
-    role: "system",
-    message: "consent_accepted",
-    source: "whatsapp",
-    metadata: { event: "consent_accepted", phone_number_id: incomingPhoneNumberId },
-  }).catch((err) => console.error("Error guardando consentimiento:", err.message));
 }
 
 async function sendConsentCard(to, userName, phoneNumberId, token) {
@@ -408,13 +401,13 @@ async function handleConsentGate({ from, text, buttonId, userName, countryCode, 
   const inbound = text || (buttonId ? "Continuar" : "");
   try {
     if (isConsentAcceptance(buttonId, text)) {
-      // Guarda el "Continuar" del usuario para que aparezca en el historial/panel.
+      // Guarda el "Continuar" del usuario: este turno (event=consent_accept) es
+      // el que marca el consentimiento vigente (ver hasRecentConsent).
       await saveConversationTurn({
         userId: from, countryCode, role: "user", message: inbound, source: "whatsapp",
         metadata: { event: "consent_accept", wa_message_id: messageId, phone_number_id: incomingPhoneNumberId },
       }).catch((err) => console.error("Error guardando aceptación:", err.message));
 
-      await recordConsent(from, countryCode, incomingPhoneNumberId);
       const saludo = userName ? `¡Gracias, ${userName}!` : "¡Gracias!";
       const welcome = `${saludo} Soy el asistente virtual de Aldeas Infantiles SOS. Cuéntame en qué puedo orientarte hoy —sobre nuestros programas, servicios o cómo acceder a ellos.`;
       await sendWhatsAppMessage(from, welcome, phoneNumberId, token);
