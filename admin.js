@@ -55,21 +55,58 @@ function safeEqual(a, b) {
   return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
 }
 
+// Usuarios del panel, uno por persona. Formato:
+//   ADMIN_USERS="ana:clave1,luis:clave2"
+// Permite dar y revocar accesos individualmente sin compartir un secreto común.
+function loadAdminUsers() {
+  const users = new Map();
+  for (const pair of (process.env.ADMIN_USERS || "").split(",")) {
+    const raw = pair.trim();
+    const i = raw.indexOf(":");
+    if (i <= 0) continue;
+    const user = raw.slice(0, i).trim();
+    const pass = raw.slice(i + 1).trim();
+    if (user && pass) users.set(user, pass);
+  }
+  return users;
+}
+
 module.exports = function createAdminRouter(supabase) {
   const router = express.Router();
 
+  const adminUsers = loadAdminUsers();
+  // Respaldo de un solo acceso compartido (sin usuario). INGEST_SECRET es el
+  // último recurso: NO debe compartirse porque también permite ingestar contenido.
+  const sharedPassword = process.env.ADMIN_PASSWORD || process.env.INGEST_SECRET;
+
+  if (adminUsers.size > 0) {
+    console.log(`🔐 Panel /admin: ${adminUsers.size} usuario(s) configurado(s) — ${[...adminUsers.keys()].join(", ")}`);
+  } else if (process.env.ADMIN_PASSWORD) {
+    console.log("🔐 Panel /admin: contraseña compartida (ADMIN_PASSWORD). Considera usar ADMIN_USERS para accesos por persona.");
+  } else if (sharedPassword) {
+    console.warn("⚠️  Panel /admin usando INGEST_SECRET como contraseña. NO lo compartas: también da acceso a la ingesta. Define ADMIN_USERS o ADMIN_PASSWORD.");
+  }
+
   // ── Basic Auth para todo /admin ──
   router.use((req, res, next) => {
-    const password = process.env.ADMIN_PASSWORD || process.env.INGEST_SECRET;
-    if (!password) {
-      return res.status(503).send("Panel no disponible: define ADMIN_PASSWORD.");
+    if (adminUsers.size === 0 && !sharedPassword) {
+      return res.status(503).send("Panel no disponible: define ADMIN_USERS o ADMIN_PASSWORD.");
     }
     const header = req.headers.authorization || "";
     const [scheme, encoded] = header.split(" ");
     if (scheme === "Basic" && encoded) {
       const decoded = Buffer.from(encoded, "base64").toString();
-      const pass = decoded.slice(decoded.indexOf(":") + 1);
-      if (safeEqual(pass, password)) return next();
+      const i = decoded.indexOf(":");
+      const user = i >= 0 ? decoded.slice(0, i) : "";
+      const pass = i >= 0 ? decoded.slice(i + 1) : decoded;
+
+      if (adminUsers.size > 0) {
+        // Con usuarios configurados, el usuario debe coincidir además de la clave.
+        const expected = adminUsers.get(user);
+        if (expected && safeEqual(pass, expected)) return next();
+      } else if (safeEqual(pass, sharedPassword)) {
+        return next();
+      }
     }
     res.set("WWW-Authenticate", 'Basic realm="Aldeas Admin"');
     return res.status(401).send("Autenticación requerida");
