@@ -17,6 +17,9 @@
     .side-head { background:var(--green); color:#fff; padding:14px 16px; display:flex; align-items:center; justify-content:space-between; }
     .side-head h1 { font-size:16px; margin:0; font-weight:600; }
     .side-head button { background:rgba(255,255,255,.2); color:#fff; border:0; border-radius:6px; padding:6px 10px; cursor:pointer; font-size:13px; }
+    .whoami { padding:7px 14px; font-size:12px; color:var(--muted); background:#f7f9fa; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:6px; }
+    .whoami b { color:var(--text); }
+    .scope { background:var(--green2); color:#fff; border-radius:10px; padding:1px 8px; font-size:11px; font-weight:600; }
     .search { padding:8px; border-bottom:1px solid var(--line); }
     .search input { width:100%; padding:8px 12px; border:1px solid var(--line); border-radius:20px; font-size:14px; outline:none; }
     .users { overflow-y:auto; flex:1; }
@@ -61,6 +64,7 @@
         <h1>💬 Aldeas · Conversaciones</h1>
         <button id="refresh" title="Actualizar">↻</button>
       </div>
+      <div class="whoami" id="whoami"></div>
       <div class="search"><input id="search" placeholder="Buscar número…" /></div>
       <div class="users" id="users"><div class="empty">Cargando…</div></div>
     </aside>
@@ -92,6 +96,19 @@
       }
       if(last<text.length) frag.appendChild(document.createTextNode(text.slice(last)));
       return frag;
+    }
+
+    async function loadMe(){
+      try{
+        const r=await fetch("/admin/api/me"); if(!r.ok) return;
+        const j=await r.json();
+        const scope=(j.countries||[]).includes("*") ? "Todos los países" : (j.countries||[]).join(", ");
+        $("whoami").innerHTML="";
+        const t=document.createTextNode("Conectado como ");
+        const b=document.createElement("b"); b.textContent=j.user||"—";
+        const s=document.createElement("span"); s.className="scope"; s.textContent=scope;
+        $("whoami").append(t,b,s);
+      }catch{}
     }
 
     async function loadUsers(){
@@ -175,6 +192,7 @@
       const url="/admin/api/export?user="+encodeURIComponent(current.user_id)+"&country="+encodeURIComponent(current.country_code);
       const a=document.createElement("a"); a.href=url; a.download=""; document.body.appendChild(a); a.click(); a.remove();
     });
+    loadMe();
     loadUsers();
   </script>
 </body>

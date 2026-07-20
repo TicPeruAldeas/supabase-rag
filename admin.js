@@ -55,20 +55,45 @@ function safeEqual(a, b) {
   return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
 }
 
-// Usuarios del panel, uno por persona. Formato:
-//   ADMIN_USERS="ana:clave1,luis:clave2"
-// Permite dar y revocar accesos individualmente sin compartir un secreto común.
+// Usuarios del panel, uno por persona, con alcance por país. Formato:
+//   ADMIN_USERS="ana:clave1:CO,luis:clave2:PE|CO,jordan:clave3:*"
+// El tercer campo es opcional (por defecto "*" = todos los países).
+// Nota: las contraseñas no deben contener ":".
+const COUNTRY_SPEC = /^(\*|[A-Za-z]{2}(\|[A-Za-z]{2})*)$/;
+
 function loadAdminUsers() {
   const users = new Map();
-  for (const pair of (process.env.ADMIN_USERS || "").split(",")) {
-    const raw = pair.trim();
-    const i = raw.indexOf(":");
-    if (i <= 0) continue;
-    const user = raw.slice(0, i).trim();
-    const pass = raw.slice(i + 1).trim();
-    if (user && pass) users.set(user, pass);
+  for (const entry of (process.env.ADMIN_USERS || "").split(",")) {
+    const raw = entry.trim();
+    if (!raw) continue;
+    const parts = raw.split(":");
+    if (parts.length < 2) continue;
+
+    const user = parts[0].trim();
+    const last = parts[parts.length - 1].trim();
+    let pass, countriesRaw;
+    // Si el último campo parece un país (CO, PE|CO, *), es el alcance.
+    if (parts.length >= 3 && COUNTRY_SPEC.test(last)) {
+      pass = parts.slice(1, -1).join(":").trim();
+      countriesRaw = last;
+    } else {
+      pass = parts.slice(1).join(":").trim();
+      countriesRaw = "*";
+    }
+    if (!user || !pass) continue;
+
+    const countries = countriesRaw === "*"
+      ? ["*"]
+      : countriesRaw.split("|").map((c) => c.trim().toUpperCase()).filter(Boolean);
+    users.set(user, { pass, countries });
   }
   return users;
+}
+
+// ¿El usuario puede ver este país?
+function canAccess(countries, country) {
+  if (!Array.isArray(countries)) return false;
+  return countries.includes("*") || countries.includes(String(country || "").toUpperCase());
 }
 
 module.exports = function createAdminRouter(supabase) {
@@ -80,7 +105,10 @@ module.exports = function createAdminRouter(supabase) {
   const sharedPassword = process.env.ADMIN_PASSWORD || process.env.INGEST_SECRET;
 
   if (adminUsers.size > 0) {
-    console.log(`🔐 Panel /admin: ${adminUsers.size} usuario(s) configurado(s) — ${[...adminUsers.keys()].join(", ")}`);
+    const detalle = [...adminUsers.entries()]
+      .map(([u, v]) => `${u}[${v.countries.join("|")}]`)
+      .join(", ");
+    console.log(`🔐 Panel /admin: ${adminUsers.size} usuario(s) — ${detalle}`);
   } else if (process.env.ADMIN_PASSWORD) {
     console.log("🔐 Panel /admin: contraseña compartida (ADMIN_PASSWORD). Considera usar ADMIN_USERS para accesos por persona.");
   } else if (sharedPassword) {
@@ -103,8 +131,13 @@ module.exports = function createAdminRouter(supabase) {
       if (adminUsers.size > 0) {
         // Con usuarios configurados, el usuario debe coincidir además de la clave.
         const expected = adminUsers.get(user);
-        if (expected && safeEqual(pass, expected)) return next();
+        if (expected && safeEqual(pass, expected.pass)) {
+          req.adminUser = { name: user, countries: expected.countries };
+          return next();
+        }
       } else if (safeEqual(pass, sharedPassword)) {
+        // Acceso compartido: sin restricción de país.
+        req.adminUser = { name: user || "admin", countries: ["*"] };
         return next();
       }
     }
@@ -117,12 +150,22 @@ module.exports = function createAdminRouter(supabase) {
     res.sendFile(path.join(__dirname, "admin.html"));
   });
 
+  // ── Quién soy y qué países puedo ver ──
+  router.get("/api/me", (req, res) => {
+    res.json({ user: req.adminUser.name, countries: req.adminUser.countries });
+  });
+
   // ── Lista de personas (último mensaje + fecha + conteo) ──
-  router.get("/api/users", async (_req, res) => {
-    const { data, error } = await supabase
+  router.get("/api/users", async (req, res) => {
+    let query = supabase
       .from("conversations")
       .select("user_id,country_code,role,message,created_at")
-      .in("role", ["user", "assistant"])
+      .in("role", ["user", "assistant"]);
+    // Alcance por país: se filtra en la CONSULTA, no en la interfaz.
+    if (!req.adminUser.countries.includes("*")) {
+      query = query.in("country_code", req.adminUser.countries);
+    }
+    const { data, error } = await query
       .order("created_at", { ascending: false })
       .limit(5000);
     if (error) return res.status(500).json({ error: error.message });
@@ -151,6 +194,9 @@ module.exports = function createAdminRouter(supabase) {
     const user = req.query.user;
     const country = req.query.country || "PE";
     if (!user) return res.status(400).json({ error: "Falta el parámetro user" });
+    if (!canAccess(req.adminUser.countries, country)) {
+      return res.status(403).json({ error: `Sin acceso al país ${country}` });
+    }
 
     const { data, error } = await supabase
       .from("conversations")
@@ -170,6 +216,9 @@ module.exports = function createAdminRouter(supabase) {
     const user = req.query.user;
     const country = req.query.country || "PE";
     if (!user) return res.status(400).json({ error: "Falta el parámetro user" });
+    if (!canAccess(req.adminUser.countries, country)) {
+      return res.status(403).json({ error: `Sin acceso al país ${country}` });
+    }
 
     const { data, error } = await supabase
       .from("conversations")
