@@ -500,5 +500,63 @@ module.exports = function createAdminRouter(supabase) {
     res.send(buf);
   });
 
+  // ── Exportar TODOS los mensajes de un periodo (último 1/3/6 meses) ──
+  // Respeta el alcance por país del usuario. Pagina para no truncar en 1.000.
+  router.get("/api/export-all", async (req, res) => {
+    const months = [1, 3, 6].includes(Number(req.query.months)) ? Number(req.query.months) : 1;
+    const desde = new Date();
+    desde.setMonth(desde.getMonth() - months);
+    const sinceIso = desde.toISOString();
+
+    const PAGE = 1000;
+    const MAX = 100000; // tope de seguridad
+    const all = [];
+    let from = 0;
+    while (from < MAX) {
+      let q = supabase
+        .from("conversations")
+        .select("user_id,country_code,role,message,created_at,source,metadata")
+        .in("role", ["user", "assistant"])
+        .gte("created_at", sinceIso)
+        .order("created_at", { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (!req.adminUser.countries.includes("*")) {
+        q = q.in("country_code", req.adminUser.countries);
+      }
+      const { data, error } = await q;
+      if (error) return res.status(500).json({ error: error.message });
+      all.push(...(data || []));
+      if (!data || data.length < PAGE) break;
+      from += PAGE;
+    }
+
+    const rows = all.map((t) => ({
+      "Fecha y hora": fmtFecha(t.created_at),
+      "País": t.country_code || "",
+      "Número": t.user_id || "",
+      "Rol": t.role === "assistant" ? "Asistente" : "Usuario",
+      "Mensaje": t.message || "",
+      "Canal": t.source || "",
+      "Tipo de respuesta": tipoRespuesta(t.metadata),
+      "ID de contenido": t.metadata?.flow_id || "",
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(rows, {
+      header: ["Fecha y hora", "País", "Número", "Rol", "Mensaje", "Canal", "Tipo de respuesta", "ID de contenido"],
+    });
+    ws["!cols"] = [{ wch: 18 }, { wch: 7 }, { wch: 16 }, { wch: 10 }, { wch: 80 }, { wch: 10 }, { wch: 34 }, { wch: 16 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Mensajes");
+    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+    audit(supabase, { user: req.adminUser.name, action: "descargar_excel_masivo", ip: clientIp(req), details: { meses: months, filas: rows.length } });
+
+    const capped = all.length >= MAX;
+    if (capped) res.setHeader("X-Export-Capped", "true");
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="mensajes_${months}meses.xlsx"`);
+    res.send(buf);
+  });
+
   return router;
 };

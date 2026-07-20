@@ -25,6 +25,11 @@
     .whoami a.out:hover { text-decoration:underline; }
     .search { padding:8px; border-bottom:1px solid var(--line); }
     .search input { width:100%; padding:8px 12px; border:1px solid var(--line); border-radius:20px; font-size:14px; outline:none; }
+    .bulk { display:flex; gap:6px; padding:8px; border-bottom:1px solid var(--line); align-items:center; }
+    .bulk select { flex:1; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:13px; background:#fff; outline:none; }
+    .bulk button { background:var(--green2); color:#fff; border:0; border-radius:8px; padding:8px 12px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap; }
+    .bulk button:hover { background:var(--green); }
+    .bulk button:disabled { opacity:.6; cursor:default; }
     .users { overflow-y:auto; flex:1; }
     .user { display:flex; gap:10px; padding:10px 14px; border-bottom:1px solid #f2f2f2; cursor:pointer; align-items:center; }
     .user:hover { background:#f5f5f5; }
@@ -116,6 +121,14 @@
       </div>
       <div class="whoami" id="whoami"></div>
       <div class="search"><input id="search" placeholder="Buscar número…" /></div>
+      <div class="bulk">
+        <select id="bulkPeriod" title="Periodo a exportar">
+          <option value="1">Último mes</option>
+          <option value="3">Últimos 3 meses</option>
+          <option value="6">Últimos 6 meses</option>
+        </select>
+        <button id="bulkDl" title="Descargar en Excel todos los mensajes del periodo">⤓ Exportar todo</button>
+      </div>
       <div class="users" id="users"><div class="empty">Cargando…</div></div>
     </aside>
     <main class="chat">
@@ -442,6 +455,14 @@
       if(!current) return;
       const url="/admin/api/export?user="+encodeURIComponent(current.user_id)+"&country="+encodeURIComponent(current.country_code);
       const a=document.createElement("a"); a.href=url; a.download=""; document.body.appendChild(a); a.click(); a.remove();
+    });
+    $("bulkDl").addEventListener("click", ()=>{
+      const b=$("bulkDl"), meses=$("bulkPeriod").value;
+      const txt=b.textContent; b.disabled=true; b.textContent="Preparando…";
+      const a=document.createElement("a"); a.href="/admin/api/export-all?months="+encodeURIComponent(meses);
+      a.download=""; document.body.appendChild(a); a.click(); a.remove();
+      // El navegador maneja la descarga; reactivamos el botón tras un momento.
+      setTimeout(()=>{ b.disabled=false; b.textContent=txt; }, 4000);
     });
     loadMe();
     loadUsers();
