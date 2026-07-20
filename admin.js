@@ -96,6 +96,71 @@ function canAccess(countries, country) {
   return countries.includes("*") || countries.includes(String(country || "").toUpperCase());
 }
 
+// ── Sesión por cookie firmada (para la pantalla de login) ─────
+const SESSION_COOKIE = "aldeas_admin";
+const SESSION_TTL_MS = (Number(process.env.ADMIN_SESSION_HOURS) || 8) * 60 * 60 * 1000;
+const SESSION_SECRET = process.env.ADMIN_SESSION_SECRET || process.env.INGEST_SECRET || "";
+
+function signSession(payload) {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto.createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+
+function verifySession(token) {
+  const [body, sig] = String(token || "").split(".");
+  if (!body || !sig) return null;
+  const expected = crypto.createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
+  if (!safeEqual(sig, expected)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString());
+    return payload.exp && Date.now() < payload.exp ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCookies(req) {
+  const out = {};
+  for (const part of String(req.headers.cookie || "").split(";")) {
+    const i = part.indexOf("=");
+    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+
+function clientIp(req) {
+  return String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || null;
+}
+
+// ── Auditoría ─────────────────────────────────────────────────
+// Escribe en la tabla admin_audit si existe; si no, deja rastro en los logs.
+let auditTableOk = null; // null = aún no se sabe
+
+async function audit(supabase, { user, action, country = null, target = null, ip = null, details = {} }) {
+  const linea = `📋 AUDIT ${user || "?"} · ${action}${country ? " · " + country : ""}${target ? " · " + target : ""}`;
+  if (auditTableOk === false) return void console.log(linea);
+
+  const { error } = await supabase.from("admin_audit").insert({
+    admin_user: user || null,
+    action,
+    country_code: country,
+    target_user: target,
+    ip,
+    details,
+  });
+
+  if (error) {
+    if (auditTableOk === null) {
+      auditTableOk = false;
+      console.warn(`⚠️  Tabla admin_audit no disponible (${error.message}). La auditoría quedará solo en los logs; corre la migración para persistirla.`);
+    }
+    console.log(linea);
+  } else {
+    auditTableOk = true;
+  }
+}
+
 module.exports = function createAdminRouter(supabase) {
   const router = express.Router();
 
@@ -115,34 +180,74 @@ module.exports = function createAdminRouter(supabase) {
     console.warn("⚠️  Panel /admin usando INGEST_SECRET como contraseña. NO lo compartas: también da acceso a la ingesta. Define ADMIN_USERS o ADMIN_PASSWORD.");
   }
 
-  // ── Basic Auth para todo /admin ──
+  // Valida usuario/clave y devuelve la identidad (nombre + países) o null.
+  function checkCredentials(user, pass) {
+    if (adminUsers.size > 0) {
+      const found = adminUsers.get(user);
+      if (found && safeEqual(pass, found.pass)) return { name: user, countries: found.countries };
+      return null;
+    }
+    if (sharedPassword && safeEqual(pass, sharedPassword)) {
+      return { name: user || "admin", countries: ["*"] };
+    }
+    return null;
+  }
+
+  function setSessionCookie(req, res, identity) {
+    const token = signSession({ u: identity.name, c: identity.countries, exp: Date.now() + SESSION_TTL_MS });
+    const secure = (req.headers["x-forwarded-proto"] || req.protocol) === "https";
+    res.setHeader("Set-Cookie",
+      `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/admin; HttpOnly; SameSite=Lax; ` +
+      `Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secure ? "; Secure" : ""}`);
+  }
+
+  // ── Pantalla de login (el link que se comparte) ──
+  router.get("/login", (req, res) => {
+    if (verifySession(parseCookies(req)[SESSION_COOKIE])) return res.redirect("/admin/");
+    res.sendFile(path.join(__dirname, "admin-login.html"));
+  });
+
+  router.post("/login", async (req, res) => {
+    const user = String(req.body?.user || "").trim();
+    const pass = String(req.body?.password || "");
+    const identity = checkCredentials(user, pass);
+    if (!identity) {
+      await audit(supabase, { user: user || "(vacío)", action: "login_fallido", ip: clientIp(req) });
+      return res.redirect("/admin/login?error=1");
+    }
+    setSessionCookie(req, res, identity);
+    await audit(supabase, { user: identity.name, action: "inicio_sesion", ip: clientIp(req), details: { countries: identity.countries } });
+    res.redirect("/admin/");
+  });
+
+  router.get("/logout", (req, res) => {
+    res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; Path=/admin; HttpOnly; SameSite=Lax; Max-Age=0`);
+    res.redirect("/admin/login");
+  });
+
+  // ── Autenticación: cookie de sesión, o Basic Auth como respaldo ──
   router.use((req, res, next) => {
     if (adminUsers.size === 0 && !sharedPassword) {
       return res.status(503).send("Panel no disponible: define ADMIN_USERS o ADMIN_PASSWORD.");
     }
-    const header = req.headers.authorization || "";
-    const [scheme, encoded] = header.split(" ");
+    const sess = verifySession(parseCookies(req)[SESSION_COOKIE]);
+    if (sess) {
+      req.adminUser = { name: sess.u, countries: sess.c };
+      return next();
+    }
+    const [scheme, encoded] = String(req.headers.authorization || "").split(" ");
     if (scheme === "Basic" && encoded) {
       const decoded = Buffer.from(encoded, "base64").toString();
       const i = decoded.indexOf(":");
-      const user = i >= 0 ? decoded.slice(0, i) : "";
-      const pass = i >= 0 ? decoded.slice(i + 1) : decoded;
-
-      if (adminUsers.size > 0) {
-        // Con usuarios configurados, el usuario debe coincidir además de la clave.
-        const expected = adminUsers.get(user);
-        if (expected && safeEqual(pass, expected.pass)) {
-          req.adminUser = { name: user, countries: expected.countries };
-          return next();
-        }
-      } else if (safeEqual(pass, sharedPassword)) {
-        // Acceso compartido: sin restricción de país.
-        req.adminUser = { name: user || "admin", countries: ["*"] };
+      const identity = checkCredentials(i >= 0 ? decoded.slice(0, i) : "", i >= 0 ? decoded.slice(i + 1) : decoded);
+      if (identity) {
+        req.adminUser = identity;
         return next();
       }
     }
-    res.set("WWW-Authenticate", 'Basic realm="Aldeas Admin"');
-    return res.status(401).send("Autenticación requerida");
+    // Sin sesión: las páginas van al login; las APIs devuelven 401.
+    if (req.path.startsWith("/api/")) return res.status(401).json({ error: "No autorizado" });
+    return res.redirect("/admin/login");
   });
 
   // ── Página ──
@@ -208,7 +313,22 @@ module.exports = function createAdminRouter(supabase) {
       .limit(2000);
     if (error) return res.status(500).json({ error: error.message });
 
+    audit(supabase, { user: req.adminUser.name, action: "ver_conversacion", country, target: user, ip: clientIp(req) });
     res.json({ user, country, turns: data });
+  });
+
+  // ── Bitácora de auditoría (solo usuarios con alcance total) ──
+  router.get("/api/audit", async (req, res) => {
+    if (!req.adminUser.countries.includes("*")) {
+      return res.status(403).json({ error: "Solo disponible para administradores generales" });
+    }
+    const { data, error } = await supabase
+      .from("admin_audit")
+      .select("admin_user,action,country_code,target_user,ip,created_at")
+      .order("created_at", { ascending: false })
+      .limit(500);
+    if (error) return res.status(503).json({ error: "Bitácora no disponible: falta la tabla admin_audit", detail: error.message });
+    res.json({ entries: data });
   });
 
   // ── Exportar el hilo completo a Excel ──
@@ -246,6 +366,8 @@ module.exports = function createAdminRouter(supabase) {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Conversacion");
     const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+
+    audit(supabase, { user: req.adminUser.name, action: "descargar_excel", country, target: user, ip: clientIp(req), details: { filas: rows.length } });
 
     const safeUser = String(user).replace(/[^\dA-Za-z]/g, "");
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");

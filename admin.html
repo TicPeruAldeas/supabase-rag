@@ -20,6 +20,8 @@
     .whoami { padding:7px 14px; font-size:12px; color:var(--muted); background:#f7f9fa; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:6px; }
     .whoami b { color:var(--text); }
     .scope { background:var(--green2); color:#fff; border-radius:10px; padding:1px 8px; font-size:11px; font-weight:600; }
+    .whoami a.out { margin-left:auto; color:var(--green2); text-decoration:none; font-weight:600; }
+    .whoami a.out:hover { text-decoration:underline; }
     .search { padding:8px; border-bottom:1px solid var(--line); }
     .search input { width:100%; padding:8px 12px; border:1px solid var(--line); border-radius:20px; font-size:14px; outline:none; }
     .users { overflow-y:auto; flex:1; }
@@ -107,7 +109,8 @@
         const t=document.createTextNode("Conectado como ");
         const b=document.createElement("b"); b.textContent=j.user||"—";
         const s=document.createElement("span"); s.className="scope"; s.textContent=scope;
-        $("whoami").append(t,b,s);
+        const out=document.createElement("a"); out.className="out"; out.href="/admin/logout"; out.textContent="Salir";
+        $("whoami").append(t,b,s,out);
       }catch{}
     }
 
