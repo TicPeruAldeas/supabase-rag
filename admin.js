@@ -85,7 +85,8 @@ function loadAdminUsers() {
     const countries = countriesRaw === "*"
       ? ["*"]
       : countriesRaw.split("|").map((c) => c.trim().toUpperCase()).filter(Boolean);
-    users.set(user, { pass, countries });
+    // Clave en minúsculas: el usuario no distingue mayúsculas al entrar.
+    users.set(user.toLowerCase(), { name: user, pass, countries });
   }
   return users;
 }
@@ -219,8 +220,8 @@ module.exports = function createAdminRouter(supabase) {
       }
     }
     if (adminUsers.size > 0) {
-      const found = adminUsers.get(user);
-      if (found && safeEqual(pass, found.pass)) return { name: user, countries: found.countries };
+      const found = adminUsers.get(String(user || "").toLowerCase());
+      if (found && safeEqual(pass, found.pass)) return { name: found.name, countries: found.countries };
       return null;
     }
     if (sharedPassword && safeEqual(pass, sharedPassword)) {
@@ -245,7 +246,9 @@ module.exports = function createAdminRouter(supabase) {
 
   router.post("/login", async (req, res) => {
     const user = String(req.body?.user || "").trim();
-    const pass = String(req.body?.password || "");
+    // .trim(): las claves largas se pegan a menudo con un espacio o salto de
+    // línea al final, lo que hacía fallar el acceso sin motivo aparente.
+    const pass = String(req.body?.password || "").trim();
     const identity = await checkCredentials(user, pass);
     if (!identity) {
       await audit(supabase, { user: user || "(vacío)", action: "login_fallido", ip: clientIp(req) });
