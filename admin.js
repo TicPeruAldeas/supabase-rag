@@ -362,6 +362,18 @@ module.exports = function createAdminRouter(supabase) {
     return true;
   }
 
+  // Países disponibles: los configurados en el entorno + los presentes en datos.
+  router.get("/api/countries", async (req, res) => {
+    const set = new Set();
+    for (const key of Object.keys(process.env)) {
+      const m = key.match(/^WHATSAPP_PHONE_NUMBER_ID_([A-Z]{2})$/);
+      if (m && process.env[key]) set.add(m[1]);
+    }
+    const { data } = await supabase.from("conversations").select("country_code").limit(2000);
+    for (const r of data || []) if (r.country_code) set.add(String(r.country_code).toUpperCase());
+    res.json({ countries: [...set].sort() });
+  });
+
   router.get("/api/admin-users", async (req, res) => {
     if (!requireGeneralAdmin(req, res)) return;
     const { data, error } = await supabase

@@ -17,7 +17,8 @@
     .side-head { background:var(--green); color:#fff; padding:14px 16px; display:flex; align-items:center; justify-content:space-between; }
     .side-head h1 { font-size:16px; margin:0; font-weight:600; }
     .side-head button { background:rgba(255,255,255,.2); color:#fff; border:0; border-radius:6px; padding:6px 10px; cursor:pointer; font-size:13px; }
-    .whoami { padding:7px 14px; font-size:12px; color:var(--muted); background:#f7f9fa; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:6px; }
+    .whoami { padding:7px 12px; font-size:12px; color:var(--muted); background:#f7f9fa; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:6px; white-space:nowrap; overflow:hidden; }
+    .whoami .who { overflow:hidden; text-overflow:ellipsis; }
     .whoami b { color:var(--text); }
     .scope { background:var(--green2); color:#fff; border-radius:10px; padding:1px 8px; font-size:11px; font-weight:600; }
     .whoami a.out { margin-left:auto; color:var(--green2); text-decoration:none; font-weight:600; }
@@ -65,21 +66,41 @@
     .modal-head h2 { margin:0; font-size:16px; }
     .modal-head button { background:transparent; border:0; color:#fff; font-size:18px; cursor:pointer; }
     .modal-body { padding:18px; overflow-y:auto; }
-    .utable { width:100%; border-collapse:collapse; font-size:13px; }
-    .utable th { text-align:left; color:var(--muted); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--line); }
-    .utable td { padding:8px; border-bottom:1px solid #f2f2f2; vertical-align:middle; }
-    .utable .acts { display:flex; gap:6px; flex-wrap:wrap; }
-    .utable button { border:1px solid var(--line); background:#fff; border-radius:6px; padding:4px 8px; cursor:pointer; font-size:12px; }
-    .utable button:hover { background:#f5f5f5; }
-    .utable button.danger { color:#a3261b; border-color:#f0c6c2; }
-    .pill { border-radius:10px; padding:1px 8px; font-size:11px; font-weight:600; }
+    .sect { font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; margin:0 0 10px; }
+    /* Lista de usuarios */
+    .urow { border:1px solid var(--line); border-radius:10px; padding:11px 13px; margin-bottom:9px; }
+    .urow .top { display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+    .urow .uname { font-weight:600; font-size:14px; }
+    .urow .spacer { margin-left:auto; }
+    .urow .acts { display:flex; gap:6px; }
+    .urow .acts button { border:1px solid var(--line); background:#fff; border-radius:6px; padding:5px 10px; cursor:pointer; font-size:12px; color:var(--text); }
+    .urow .acts button:hover { background:#f5f5f5; }
+    .urow .acts button.danger { color:#a3261b; border-color:#f0c6c2; }
+    .urow .acts button.danger:hover { background:#fdecea; }
+    .uempty { border:1px dashed var(--line); border-radius:10px; padding:18px; text-align:center; color:var(--muted); font-size:13px; }
+    .pill { border-radius:10px; padding:2px 9px; font-size:11px; font-weight:600; }
     .pill.on { background:#e4f5ea; color:#1b7a43; }
     .pill.off { background:#f1f1f1; color:#777; }
-    .newu { margin-top:18px; border-top:1px solid var(--line); padding-top:14px; }
-    .newu h3 { margin:0 0 10px; font-size:14px; }
-    .newu .row { display:flex; gap:8px; flex-wrap:wrap; }
-    .newu input { flex:1; min-width:130px; padding:9px 10px; border:1px solid var(--line); border-radius:8px; font-size:14px; }
-    .newu button { background:var(--green2); color:#fff; border:0; border-radius:8px; padding:9px 16px; font-weight:600; cursor:pointer; }
+    .cchip { background:#eaf2f7; color:#245b7d; border-radius:10px; padding:2px 9px; font-size:11px; font-weight:600; }
+    /* Panel de edición desplegable */
+    .uedit { margin-top:11px; padding-top:11px; border-top:1px dashed var(--line); }
+    /* Formularios */
+    .field { margin-bottom:12px; }
+    .field > label { display:block; font-size:12px; font-weight:600; margin-bottom:5px; color:var(--text); }
+    .field input[type=text], .field input[type=password] { width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:8px; font-size:14px; outline:none; }
+    .field input:focus { border-color:var(--green2); box-shadow:0 0 0 3px rgba(18,140,126,.10); }
+    .pwrap { display:flex; gap:6px; }
+    .pwrap input { flex:1; }
+    .mini { border:1px solid var(--line); background:#fff; border-radius:8px; padding:0 11px; cursor:pointer; font-size:12px; white-space:nowrap; }
+    .mini:hover { background:#f5f5f5; }
+    .chips { display:flex; gap:7px; flex-wrap:wrap; }
+    .chip { border:1px solid var(--line); background:#fff; border-radius:20px; padding:6px 13px; cursor:pointer; font-size:13px; user-select:none; }
+    .chip:hover { background:#f5f5f5; }
+    .chip.sel { background:var(--green2); border-color:var(--green2); color:#fff; font-weight:600; }
+    .primary { background:var(--green2); color:#fff; border:0; border-radius:8px; padding:10px 18px; font-weight:600; cursor:pointer; font-size:14px; }
+    .primary:hover { background:var(--green); }
+    .ghost { background:#fff; border:1px solid var(--line); border-radius:8px; padding:10px 16px; cursor:pointer; font-size:14px; }
+    .newu { margin-top:20px; border-top:1px solid var(--line); padding-top:16px; }
     .hint { font-size:12px; color:var(--muted); margin-top:8px; }
     .msg { padding:9px 12px; border-radius:8px; font-size:13px; margin-bottom:12px; display:none; }
     .msg.ok { background:#e4f5ea; color:#1b7a43; display:block; }
@@ -115,19 +136,30 @@
       </div>
       <div class="modal-body">
         <div class="msg" id="userMsg"></div>
-        <table class="utable">
-          <thead><tr><th>Usuario</th><th>Países</th><th>Estado</th><th>Acciones</th></tr></thead>
-          <tbody id="userRows"><tr><td colspan="4">Cargando…</td></tr></tbody>
-        </table>
+
+        <p class="sect">Usuarios con acceso</p>
+        <div id="userList"><div class="uempty">Cargando…</div></div>
+
         <div class="newu">
-          <h3>Agregar usuario</h3>
-          <div class="row">
-            <input id="nuUser" placeholder="usuario" autocomplete="off" />
-            <input id="nuPass" type="password" placeholder="contraseña (mín. 8)" autocomplete="new-password" />
-            <input id="nuCountries" placeholder="países: * o CO o PE|CO" value="*" />
-            <button id="nuAdd">Agregar</button>
+          <p class="sect">Agregar nuevo usuario</p>
+          <div class="field">
+            <label for="nuUser">Nombre de usuario</label>
+            <input type="text" id="nuUser" placeholder="p. ej. maria" autocomplete="off" />
           </div>
-          <div class="hint">Países: <b>*</b> = todos · <b>CO</b> = solo Colombia · <b>PE|CO</b> = varios. Quien tenga <b>*</b> puede gestionar usuarios.</div>
+          <div class="field">
+            <label for="nuPass">Contraseña</label>
+            <div class="pwrap">
+              <input type="password" id="nuPass" placeholder="mínimo 8 caracteres" autocomplete="new-password" />
+              <button type="button" class="mini" id="nuEye">Ver</button>
+              <button type="button" class="mini" id="nuGen">Generar</button>
+            </div>
+          </div>
+          <div class="field">
+            <label>¿Qué conversaciones podrá ver?</label>
+            <div class="chips" id="nuCountries"></div>
+          </div>
+          <button class="primary" id="nuAdd">Agregar usuario</button>
+          <div class="hint">Quien tenga acceso a <b>todos los países</b> también puede gestionar usuarios.</div>
         </div>
       </div>
     </div>
@@ -159,10 +191,11 @@
         const j=await r.json();
         const scope=(j.countries||[]).includes("*") ? "Todos los países" : (j.countries||[]).join(", ");
         $("whoami").innerHTML="";
-        const t=document.createTextNode("Conectado como ");
+        const who=document.createElement("span"); who.className="who";
         const b=document.createElement("b"); b.textContent=j.user||"—";
+        who.append(b);
         const s=document.createElement("span"); s.className="scope"; s.textContent=scope;
-        $("whoami").append(t,b,s);
+        $("whoami").append(who,s);
         // Solo los administradores generales (*) gestionan usuarios.
         if((j.countries||[]).includes("*")){
           const gu=document.createElement("a"); gu.className="out"; gu.href="#"; gu.textContent="⚙ Usuarios";
@@ -189,62 +222,143 @@
       return j;
     }
 
-    async function loadAdminUsers(){
-      const body=$("userRows");
-      body.innerHTML='<tr><td colspan="4">Cargando…</td></tr>';
-      try{
-        const j=await api("/admin/api/admin-users");
-        body.innerHTML="";
-        if(!j.users.length){
-          body.innerHTML='<tr><td colspan="4">Aún no hay usuarios en la base. Agrega el primero abajo.</td></tr>';
-        }
-        for(const u of j.users){
-          const tr=document.createElement("tr");
-          const tdU=document.createElement("td"); tdU.textContent=u.username;
-          const tdC=document.createElement("td"); tdC.textContent=u.countries==="*"?"Todos":u.countries;
-          const tdS=document.createElement("td");
-          const pill=document.createElement("span"); pill.className="pill "+(u.active?"on":"off"); pill.textContent=u.active?"Activo":"Inactivo";
-          tdS.appendChild(pill);
-          const tdA=document.createElement("td");
-          const acts=document.createElement("div"); acts.className="acts";
-
-          const bPass=document.createElement("button"); bPass.textContent="Cambiar clave";
-          bPass.onclick=async()=>{ const p=prompt("Nueva contraseña para "+u.username+" (mín. 8):"); if(!p) return;
-            try{ await api("/admin/api/admin-users/"+u.id,{method:"PATCH",body:JSON.stringify({password:p})}); uMsg("Contraseña actualizada",true); }catch(e){ uMsg(e.message,false); } };
-
-          const bC=document.createElement("button"); bC.textContent="Países";
-          bC.onclick=async()=>{ const c=prompt("Países para "+u.username+' ("*", "CO", "PE|CO"):', u.countries); if(!c) return;
-            try{ await api("/admin/api/admin-users/"+u.id,{method:"PATCH",body:JSON.stringify({countries:c})}); uMsg("Países actualizados",true); loadAdminUsers(); }catch(e){ uMsg(e.message,false); } };
-
-          const bT=document.createElement("button"); bT.textContent=u.active?"Desactivar":"Activar";
-          bT.onclick=async()=>{ try{ await api("/admin/api/admin-users/"+u.id,{method:"PATCH",body:JSON.stringify({active:!u.active})}); loadAdminUsers(); }catch(e){ uMsg(e.message,false); } };
-
-          const bD=document.createElement("button"); bD.className="danger"; bD.textContent="Eliminar";
-          bD.onclick=async()=>{ if(!confirm("¿Eliminar a "+u.username+"? Perderá el acceso.")) return;
-            try{ await api("/admin/api/admin-users/"+u.id,{method:"DELETE"}); uMsg("Usuario eliminado",true); loadAdminUsers(); }catch(e){ uMsg(e.message,false); } };
-
-          acts.append(bPass,bC,bT,bD); tdA.appendChild(acts);
-          tr.append(tdU,tdC,tdS,tdA); body.appendChild(tr);
-        }
-        if(j.envFallback && j.envFallback.length){
-          const tr=document.createElement("tr"); const td=document.createElement("td"); td.colSpan=4;
-          td.style.color="#667781"; td.style.fontSize="12px";
-          td.textContent="Además, definidos en Railway (ADMIN_USERS): "+j.envFallback.join(", ")+". Se usan solo si no existen en esta tabla.";
-          tr.appendChild(td); body.appendChild(tr);
-        }
-      }catch(e){ body.innerHTML='<tr><td colspan="4">'+e.message+'</td></tr>'; }
+    // Países disponibles (se cargan una vez y se reutilizan en los selectores)
+    let PAISES=[];
+    async function cargarPaises(){
+      if(PAISES.length) return PAISES;
+      try{ const j=await api("/admin/api/countries"); PAISES=j.countries||[]; }catch{ PAISES=[]; }
+      return PAISES;
     }
 
-    function openUsers(){ $("modal").classList.add("open"); loadAdminUsers(); }
+    // Selector de países con chips. Devuelve un objeto con .valor() -> "*" o "PE|CO"
+    function crearSelectorPaises(contenedor, seleccionInicial){
+      const sel=new Set(seleccionInicial==="*"?["*"]:String(seleccionInicial||"*").split("|").filter(Boolean));
+      contenedor.innerHTML="";
+      const chips=[];
+      function pintar(){ chips.forEach(({el,val})=>el.classList.toggle("sel", sel.has(val))); }
+      function chip(val,texto){
+        const el=document.createElement("div"); el.className="chip"; el.textContent=texto;
+        el.onclick=()=>{
+          if(val==="*"){ sel.clear(); sel.add("*"); }
+          else{
+            sel.delete("*");
+            if(sel.has(val)) sel.delete(val); else sel.add(val);
+            if(sel.size===0) sel.add("*");
+          }
+          pintar();
+        };
+        contenedor.appendChild(el); chips.push({el,val});
+      }
+      chip("*","🌎 Todos los países");
+      PAISES.forEach(p=>chip(p,p));
+      pintar();
+      return { valor: ()=> sel.has("*") ? "*" : [...sel].join("|") };
+    }
+
+    function textoPaises(c){ return c==="*" ? "Todos los países" : String(c).split("|").join(" · "); }
+
+    function generarClave(){
+      const abc="abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+      const a=new Uint32Array(14); crypto.getRandomValues(a);
+      return [...a].map(n=>abc[n%abc.length]).join("");
+    }
+
+    async function loadAdminUsers(){
+      const cont=$("userList");
+      cont.innerHTML='<div class="uempty">Cargando…</div>';
+      await cargarPaises();
+      try{
+        const j=await api("/admin/api/admin-users");
+        cont.innerHTML="";
+        if(!j.users.length){
+          cont.innerHTML='<div class="uempty">Aún no hay usuarios creados.<br>Agrega el primero con el formulario de abajo.</div>';
+        }
+        for(const u of j.users){
+          const row=document.createElement("div"); row.className="urow";
+          const top=document.createElement("div"); top.className="top";
+          const nombre=document.createElement("span"); nombre.className="uname"; nombre.textContent=u.username;
+          const paises=document.createElement("span"); paises.className="cchip"; paises.textContent=textoPaises(u.countries);
+          const estado=document.createElement("span"); estado.className="pill "+(u.active?"on":"off"); estado.textContent=u.active?"Activo":"Inactivo";
+          const sp=document.createElement("span"); sp.className="spacer";
+          const acts=document.createElement("div"); acts.className="acts";
+
+          const bEdit=document.createElement("button"); bEdit.textContent="Editar";
+          const bTog=document.createElement("button"); bTog.textContent=u.active?"Desactivar":"Activar";
+          bTog.onclick=async()=>{ try{ await api("/admin/api/admin-users/"+u.id,{method:"PATCH",body:JSON.stringify({active:!u.active})});
+            uMsg(u.active?"Usuario desactivado":"Usuario activado",true); loadAdminUsers(); }catch(e){ uMsg(e.message,false); } };
+          const bDel=document.createElement("button"); bDel.className="danger"; bDel.textContent="Eliminar";
+          bDel.onclick=async()=>{ if(!confirm("¿Eliminar a "+u.username+"?\n\nPerderá el acceso al panel de inmediato.")) return;
+            try{ await api("/admin/api/admin-users/"+u.id,{method:"DELETE"}); uMsg("Usuario eliminado",true); loadAdminUsers(); }catch(e){ uMsg(e.message,false); } };
+
+          acts.append(bEdit,bTog,bDel);
+          top.append(nombre,paises,estado,sp,acts);
+          row.appendChild(top);
+
+          // Panel de edición desplegable
+          const ed=document.createElement("div"); ed.className="uedit"; ed.hidden=true;
+          const f1=document.createElement("div"); f1.className="field";
+          f1.innerHTML='<label>Nueva contraseña <span style="font-weight:400;color:#667781">(dejar vacío para no cambiarla)</span></label>';
+          const pw=document.createElement("div"); pw.className="pwrap";
+          const pin=document.createElement("input"); pin.type="password"; pin.placeholder="mínimo 8 caracteres";
+          const pver=document.createElement("button"); pver.type="button"; pver.className="mini"; pver.textContent="Ver";
+          pver.onclick=()=>{ pin.type=pin.type==="password"?"text":"password"; pver.textContent=pin.type==="password"?"Ver":"Ocultar"; };
+          const pgen=document.createElement("button"); pgen.type="button"; pgen.className="mini"; pgen.textContent="Generar";
+          pgen.onclick=()=>{ pin.value=generarClave(); pin.type="text"; pver.textContent="Ocultar"; };
+          pw.append(pin,pver,pgen); f1.appendChild(pw);
+
+          const f2=document.createElement("div"); f2.className="field";
+          f2.innerHTML='<label>¿Qué conversaciones puede ver?</label>';
+          const chipsBox=document.createElement("div"); chipsBox.className="chips"; f2.appendChild(chipsBox);
+          const selector=crearSelectorPaises(chipsBox,u.countries);
+
+          const acciones=document.createElement("div"); acciones.style.display="flex"; acciones.style.gap="8px";
+          const bSave=document.createElement("button"); bSave.className="primary"; bSave.textContent="Guardar cambios";
+          const bCancel=document.createElement("button"); bCancel.className="ghost"; bCancel.textContent="Cancelar";
+          bCancel.onclick=()=>{ ed.hidden=true; bEdit.textContent="Editar"; };
+          bSave.onclick=async()=>{
+            const cuerpo={ countries: selector.valor() };
+            if(pin.value) cuerpo.password=pin.value;
+            try{ await api("/admin/api/admin-users/"+u.id,{method:"PATCH",body:JSON.stringify(cuerpo)});
+              uMsg("Cambios guardados para "+u.username,true); loadAdminUsers(); }catch(e){ uMsg(e.message,false); }
+          };
+          acciones.append(bSave,bCancel);
+          ed.append(f1,f2,acciones);
+          row.appendChild(ed);
+
+          bEdit.onclick=()=>{ ed.hidden=!ed.hidden; bEdit.textContent=ed.hidden?"Editar":"Cerrar"; };
+          cont.appendChild(row);
+        }
+        if(j.envFallback && j.envFallback.length){
+          const nota=document.createElement("div"); nota.className="hint";
+          nota.textContent="También hay accesos definidos en Railway (ADMIN_USERS): "+j.envFallback.join(", ")+". Solo se usan si el usuario no existe en esta lista.";
+          cont.appendChild(nota);
+        }
+      }catch(e){ cont.innerHTML='<div class="uempty">'+e.message+'</div>'; }
+    }
+
+    let selectorNuevo=null;
+    async function openUsers(){
+      $("modal").classList.add("open");
+      await cargarPaises();
+      selectorNuevo=crearSelectorPaises($("nuCountries"),"*");
+      loadAdminUsers();
+    }
     $("modalClose").addEventListener("click", ()=>$("modal").classList.remove("open"));
     $("modal").addEventListener("click", (e)=>{ if(e.target===$("modal")) $("modal").classList.remove("open"); });
+    $("nuEye").addEventListener("click", ()=>{ const p=$("nuPass");
+      p.type=p.type==="password"?"text":"password"; $("nuEye").textContent=p.type==="password"?"Ver":"Ocultar"; });
+    $("nuGen").addEventListener("click", ()=>{ $("nuPass").value=generarClave(); $("nuPass").type="text"; $("nuEye").textContent="Ocultar"; });
     $("nuAdd").addEventListener("click", async()=>{
-      const username=$("nuUser").value.trim(), password=$("nuPass").value, countries=$("nuCountries").value.trim()||"*";
-      if(!username||!password) return uMsg("Usuario y contraseña son obligatorios",false);
+      const username=$("nuUser").value.trim(), password=$("nuPass").value;
+      const countries=selectorNuevo?selectorNuevo.valor():"*";
+      if(!username||!password) return uMsg("Escribe un usuario y una contraseña",false);
+      if(password.length<8) return uMsg("La contraseña debe tener al menos 8 caracteres",false);
       try{
         await api("/admin/api/admin-users",{method:"POST",body:JSON.stringify({username,password,countries})});
-        $("nuUser").value=""; $("nuPass").value=""; $("nuCountries").value="*";
-        uMsg("Usuario creado",true); loadAdminUsers();
+        uMsg('Usuario "'+username+'" creado con acceso a: '+textoPaises(countries),true);
+        $("nuUser").value=""; $("nuPass").value=""; $("nuPass").type="password"; $("nuEye").textContent="Ver";
+        selectorNuevo=crearSelectorPaises($("nuCountries"),"*");
+        loadAdminUsers();
       }catch(e){ uMsg(e.message,false); }
     });
 
