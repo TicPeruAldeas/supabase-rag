@@ -96,6 +96,27 @@ function canAccess(countries, country) {
   return countries.includes("*") || countries.includes(String(country || "").toUpperCase());
 }
 
+// ── Contraseñas: scrypt (integrado en Node, sin dependencias) ──
+// Formato almacenado: scrypt$<salt hex>$<hash hex>. Nunca se guarda en claro.
+function hashPassword(pass) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.scryptSync(String(pass), salt, 64).toString("hex");
+  return `scrypt$${salt}$${hash}`;
+}
+
+function verifyPassword(pass, stored) {
+  const [alg, salt, hash] = String(stored || "").split("$");
+  if (alg !== "scrypt" || !salt || !hash) return false;
+  return safeEqual(crypto.scryptSync(String(pass), salt, 64).toString("hex"), hash);
+}
+
+// Normaliza el texto de países ("*", "CO", "PE|CO") a un arreglo.
+function parseCountries(raw) {
+  const value = String(raw || "*").trim();
+  if (!value || value === "*") return ["*"];
+  return value.split("|").map((c) => c.trim().toUpperCase()).filter(Boolean);
+}
+
 // ── Sesión por cookie firmada (para la pantalla de login) ─────
 const SESSION_COOKIE = "aldeas_admin";
 const SESSION_TTL_MS = (Number(process.env.ADMIN_SESSION_HOURS) || 8) * 60 * 60 * 1000;
@@ -181,7 +202,22 @@ module.exports = function createAdminRouter(supabase) {
   }
 
   // Valida usuario/clave y devuelve la identidad (nombre + países) o null.
-  function checkCredentials(user, pass) {
+  // Orden: 1) tabla admin_users  2) variable ADMIN_USERS  3) clave compartida.
+  async function checkCredentials(user, pass) {
+    if (user) {
+      const { data, error } = await supabase
+        .from("admin_users")
+        .select("username,password_hash,countries,active")
+        .ilike("username", user)
+        .limit(1);
+      if (!error && data && data.length > 0) {
+        const row = data[0];
+        if (row.active && verifyPassword(pass, row.password_hash)) {
+          return { name: row.username, countries: parseCountries(row.countries) };
+        }
+        return null; // usuario existe en BD: no se cae al respaldo
+      }
+    }
     if (adminUsers.size > 0) {
       const found = adminUsers.get(user);
       if (found && safeEqual(pass, found.pass)) return { name: user, countries: found.countries };
@@ -210,7 +246,7 @@ module.exports = function createAdminRouter(supabase) {
   router.post("/login", async (req, res) => {
     const user = String(req.body?.user || "").trim();
     const pass = String(req.body?.password || "");
-    const identity = checkCredentials(user, pass);
+    const identity = await checkCredentials(user, pass);
     if (!identity) {
       await audit(supabase, { user: user || "(vacío)", action: "login_fallido", ip: clientIp(req) });
       return res.redirect("/admin/login?error=1");
@@ -226,10 +262,7 @@ module.exports = function createAdminRouter(supabase) {
   });
 
   // ── Autenticación: cookie de sesión, o Basic Auth como respaldo ──
-  router.use((req, res, next) => {
-    if (adminUsers.size === 0 && !sharedPassword) {
-      return res.status(503).send("Panel no disponible: define ADMIN_USERS o ADMIN_PASSWORD.");
-    }
+  router.use(async (req, res, next) => {
     const sess = verifySession(parseCookies(req)[SESSION_COOKIE]);
     if (sess) {
       req.adminUser = { name: sess.u, countries: sess.c };
@@ -239,7 +272,7 @@ module.exports = function createAdminRouter(supabase) {
     if (scheme === "Basic" && encoded) {
       const decoded = Buffer.from(encoded, "base64").toString();
       const i = decoded.indexOf(":");
-      const identity = checkCredentials(i >= 0 ? decoded.slice(0, i) : "", i >= 0 ? decoded.slice(i + 1) : decoded);
+      const identity = await checkCredentials(i >= 0 ? decoded.slice(0, i) : "", i >= 0 ? decoded.slice(i + 1) : decoded);
       if (identity) {
         req.adminUser = identity;
         return next();
@@ -315,6 +348,83 @@ module.exports = function createAdminRouter(supabase) {
 
     audit(supabase, { user: req.adminUser.name, action: "ver_conversacion", country, target: user, ip: clientIp(req) });
     res.json({ user, country, turns: data });
+  });
+
+  // ── Gestión de usuarios (solo administradores generales, alcance *) ──
+  function requireGeneralAdmin(req, res) {
+    if (!req.adminUser.countries.includes("*")) {
+      res.status(403).json({ error: "Solo los administradores generales pueden gestionar usuarios" });
+      return false;
+    }
+    return true;
+  }
+
+  router.get("/api/admin-users", async (req, res) => {
+    if (!requireGeneralAdmin(req, res)) return;
+    const { data, error } = await supabase
+      .from("admin_users")
+      .select("id,username,countries,active,created_at,updated_at")
+      .order("username");
+    if (error) return res.status(503).json({ error: "Falta la tabla admin_users. Corre la migración.", detail: error.message });
+    res.json({ users: data, envFallback: adminUsers.size > 0 ? [...adminUsers.keys()] : [] });
+  });
+
+  router.post("/api/admin-users", async (req, res) => {
+    if (!requireGeneralAdmin(req, res)) return;
+    const username = String(req.body?.username || "").trim();
+    const password = String(req.body?.password || "");
+    const countries = String(req.body?.countries || "*").trim();
+    if (!username || !password) return res.status(400).json({ error: "Usuario y contraseña son obligatorios" });
+    if (password.length < 8) return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres" });
+    if (!COUNTRY_SPEC.test(countries)) return res.status(400).json({ error: 'Países inválidos. Usa "*", "CO" o "PE|CO"' });
+
+    const { error } = await supabase.from("admin_users").insert({
+      username, password_hash: hashPassword(password), countries: countries.toUpperCase() === "*" ? "*" : countries.toUpperCase(),
+    });
+    if (error) {
+      const dup = /duplicate|unique/i.test(error.message);
+      return res.status(dup ? 409 : 500).json({ error: dup ? "Ese usuario ya existe" : error.message });
+    }
+    audit(supabase, { user: req.adminUser.name, action: "usuario_creado", target: username, ip: clientIp(req), details: { countries } });
+    res.json({ ok: true });
+  });
+
+  router.patch("/api/admin-users/:id", async (req, res) => {
+    if (!requireGeneralAdmin(req, res)) return;
+    const patch = {};
+    if (req.body?.password) {
+      if (String(req.body.password).length < 8) return res.status(400).json({ error: "La contraseña debe tener al menos 8 caracteres" });
+      patch.password_hash = hashPassword(String(req.body.password));
+    }
+    if (req.body?.countries !== undefined) {
+      const c = String(req.body.countries).trim();
+      if (!COUNTRY_SPEC.test(c)) return res.status(400).json({ error: 'Países inválidos. Usa "*", "CO" o "PE|CO"' });
+      patch.countries = c.toUpperCase() === "*" ? "*" : c.toUpperCase();
+    }
+    if (req.body?.active !== undefined) patch.active = !!req.body.active;
+    if (Object.keys(patch).length === 0) return res.status(400).json({ error: "Nada que actualizar" });
+    patch.updated_at = new Date().toISOString();
+
+    const { data, error } = await supabase.from("admin_users").update(patch).eq("id", req.params.id).select("username");
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data || data.length === 0) return res.status(404).json({ error: "Usuario no encontrado" });
+    audit(supabase, { user: req.adminUser.name, action: "usuario_actualizado", target: data[0].username, ip: clientIp(req), details: Object.keys(patch) });
+    res.json({ ok: true });
+  });
+
+  router.delete("/api/admin-users/:id", async (req, res) => {
+    if (!requireGeneralAdmin(req, res)) return;
+    const { data: found } = await supabase.from("admin_users").select("username").eq("id", req.params.id).limit(1);
+    const nombre = found?.[0]?.username;
+    if (!nombre) return res.status(404).json({ error: "Usuario no encontrado" });
+    // Evita que alguien se elimine a sí mismo y se quede fuera.
+    if (String(nombre).toLowerCase() === String(req.adminUser.name).toLowerCase()) {
+      return res.status(400).json({ error: "No puedes eliminar tu propio usuario" });
+    }
+    const { error } = await supabase.from("admin_users").delete().eq("id", req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
+    audit(supabase, { user: req.adminUser.name, action: "usuario_eliminado", target: nombre, ip: clientIp(req) });
+    res.json({ ok: true });
   });
 
   // ── Bitácora de auditoría (solo usuarios con alcance total) ──
