@@ -197,9 +197,9 @@ module.exports = function createAdminRouter(supabase) {
       .join(", ");
     console.log(`🔐 Panel /admin: ${adminUsers.size} usuario(s) — ${detalle}`);
   } else if (process.env.ADMIN_PASSWORD) {
-    console.log("🔐 Panel /admin: contraseña compartida (ADMIN_PASSWORD). Considera usar ADMIN_USERS para accesos por persona.");
+    console.log(`🔐 Panel /admin: usuario "${process.env.ADMIN_USER || "admin"}" + ADMIN_PASSWORD. Considera usar ADMIN_USERS para accesos por persona.`);
   } else if (sharedPassword) {
-    console.warn("⚠️  Panel /admin usando INGEST_SECRET como contraseña. NO lo compartas: también da acceso a la ingesta. Define ADMIN_USERS o ADMIN_PASSWORD.");
+    console.warn(`⚠️  Panel /admin: usuario "${process.env.ADMIN_USER || "admin"}" + INGEST_SECRET como contraseña. NO lo compartas: también da acceso a la ingesta. Define ADMIN_USERS o ADMIN_PASSWORD.`);
   }
 
   // Valida usuario/clave y devuelve la identidad (nombre + países) o null.
@@ -224,8 +224,13 @@ module.exports = function createAdminRouter(supabase) {
       if (found && safeEqual(pass, found.pass)) return { name: found.name, countries: found.countries };
       return null;
     }
-    if (sharedPassword && safeEqual(pass, sharedPassword)) {
-      return { name: user || "admin", countries: ["*"] };
+    if (sharedPassword) {
+      // Modo de contraseña compartida: se valida TAMBIÉN el usuario (no entra
+      // "cualquiera"). El usuario esperado es ADMIN_USER (por defecto "admin").
+      const expectedUser = (process.env.ADMIN_USER || "admin").trim().toLowerCase();
+      if (String(user || "").trim().toLowerCase() === expectedUser && safeEqual(pass, sharedPassword)) {
+        return { name: process.env.ADMIN_USER || "admin", countries: ["*"] };
+      }
     }
     return null;
   }
