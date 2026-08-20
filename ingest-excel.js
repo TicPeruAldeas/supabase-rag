@@ -7,6 +7,7 @@ const XLSX = require("xlsx");
 const path = require("path");
 const fs = require("fs");
 const { buildFlowEmbeddingInput } = require("./embedding-text");
+const { stepSummarySystem } = require("./lang");
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -47,7 +48,7 @@ async function generateStepSummary(stepText, stepNumber, totalSteps) {
   const response = await anthropic.messages.create({
     model: CLAUDE_MODEL,
     max_tokens: 100,
-    system: "Resume el siguiente paso en máximo 2 líneas cortas y claras en español. Sin markdown.",
+    system: stepSummarySystem(COUNTRY_CODE),
     messages: [{
       role: "user",
       content: `Paso ${stepNumber} de ${totalSteps}:\n${stepText}`,

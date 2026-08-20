@@ -4,6 +4,7 @@ const { createClient } = require("@supabase/supabase-js");
 const OpenAI = require("openai").default;
 const Anthropic = require("@anthropic-ai/sdk");
 const { getCached, setCached } = require("./cache");
+const { langDirective, strings, condenseSystem } = require("./lang");
 
 // Mapa flow_id → URL de la fuente (generado del Excel por ingest-excel.js).
 // Se cita la fuente solo la PRIMERA vez que se toca un tema; mientras el tema
@@ -66,6 +67,7 @@ const CLAUDE_MODEL = "claude-sonnet-4-6";
 const COUNTRY_ORGS = {
   PE: "Aldeas Infantiles SOS Perú",
   CO: "Aldeas Infantiles SOS Colombia",
+  BR: "Aldeias Infantis SOS Brasil",
   MX: "Aldeas Infantiles SOS México",
   BO: "Aldeas Infantiles SOS Bolivia",
   EC: "Aldeas Infantiles SOS Ecuador",
@@ -269,13 +271,13 @@ Nunca menciones teléfonos, correos, URLs, direcciones, sedes, líneas gratuitas
 
 // Solo saludos reales. Confirmaciones cortas (sí, ok, listo...) se eliminaron
 // para que nunca disparen el saludo si hay contexto activo o reciente.
-const SMALL_TALK_REGEX = /^(hola+s?|buenos\s+(d[ií]as|tardes|noches)|buenas?(\s+(d[ií]as|tardes|noches))?|buen\s+d[ií]a|hi+|hey+|😊)[\s!?,.:]*$/i;
+const SMALL_TALK_REGEX = /^(hola+s?|buenos\s+(d[ií]as|tardes|noches)|buenas?(\s+(d[ií]as|tardes|noches))?|buen\s+d[ií]a|ol[áa]+|oi+|e\s+a[ií]|bom\s+dia|boa\s+(tarde|noite)|hi+|hey+|😊)[\s!?,.:]*$/i;
 
 // Señales de continuación dentro de un flow activo o contexto reciente.
 // "Sí", "ok", "listo", "luego qué hago", etc. nunca deben activar saludo.
 // El grupo final opcional admite cortesías/afirmaciones encadenadas como
 // "sí por favor", "si porfavor", "ya dale", "claro continúa", "ok gracias".
-const CONTINUATION_REGEX = /^(sí|si|listo|ok|okay|ya|correcto|entendido|quiero\s+continuar|continuar|continúa|continua|siguiente|el\s+siguiente|segundo\s+paso|el\s+segundo\s+paso|paso\s+\d+|adelante|claro|dale|de\s+acuerdo|por\s+supuesto|bien|perfecto|genial|luego|luego\s+(que|qué)\s+hago|dime\s+m[aá]s|👍|✅|☑)(?:\s+(?:por\s*favor|porfa|claro|dale|gracias|adelante|continúa|continua|sí|si))?[.!,?\s]*$/i;
+const CONTINUATION_REGEX = /^(sí|si|listo|ok|okay|ya|correcto|entendido|quiero\s+continuar|continuar|continúa|continua|siguiente|el\s+siguiente|segundo\s+paso|el\s+segundo\s+paso|paso\s+\d+|adelante|claro|dale|de\s+acuerdo|por\s+supuesto|bien|perfecto|genial|luego|luego\s+(que|qué)\s+hago|dime\s+m[aá]s|sim|pr[oó]ximo(\s+passo)?|o\s+pr[oó]ximo|seguinte|o\s+seguinte|passo\s+\d+|avan[çc]ar|vamos|isso|certo|entendi|me\s+diz\s+mais|depois|manda|👍|✅|☑)(?:\s+(?:por\s*favor|porfa|claro|dale|gracias|adelante|continúa|continua|sí|si|obrigad[oa]|isso))?[.!,?\s]*$/i;
 
 function isContinuationMessage(question) {
   return CONTINUATION_REGEX.test((question || "").trim());
@@ -285,7 +287,7 @@ function isContinuationMessage(question) {
 // "chau", "todo claro"...). Reciben una despedida cálida en vez del fallback
 // frío de "no tengo información". En un flujo activo se evalúa DESPUÉS de la
 // continuación, para que "listo"/"ok"/"sí" sigan avanzando el paso.
-const CLOSING_REGEX = /^(?:(?:muchas|mil|ok|okay|listo|perfecto|bien|excelente|genial)[\s,]+)*(?:gracias|graci[ai]s)(?:\s+(?:por\s+(?:tu|la|su)\s+\w+|de\s+nuevo|igualmente))?[\s!.,]*$|^(?:listo|ok|okay|eso\s+es\s+todo|es\s+todo|ya\s+est[áa]|chau|cha[ií]to|adi[oó]s|hasta\s+(?:luego|pronto|la\s+pr[oó]xima)|nos\s+vemos|bye|todo\s+claro|todo\s+bien)[\s!.,]*$/i;
+const CLOSING_REGEX = /^(?:(?:muchas|mil|ok|okay|listo|perfecto|bien|excelente|genial|muito)[\s,]+)*(?:gracias|graci[ai]s|obrigad[oa])(?:\s+(?:por\s+(?:tu|la|su|todo|a)\s+\w+|de\s+nuevo|igualmente|mesmo))?[\s!.,]*$|^(?:listo|ok|okay|eso\s+es\s+todo|es\s+todo|ya\s+est[áa]|chau|cha[ií]to|adi[oó]s|hasta\s+(?:luego|pronto|la\s+pr[oó]xima)|nos\s+vemos|bye|todo\s+claro|todo\s+bien|valeu|tchau|at[ée]\s+(?:logo|mais|breve|a\s+pr[oó]xima)|[ée]\s+isso|tudo\s+(?:certo|bem|claro))[\s!.,]*$/i;
 
 function isClosingMessage(question) {
   return CLOSING_REGEX.test((question || "").trim());
@@ -295,7 +297,7 @@ function isClosingMessage(question) {
 // "así está bien", "ya no", "suficiente"...). Dentro de un flujo paso a paso el
 // usuario pide DETENER, no avanzar. Se evalúa ANTES que la continuación para que
 // "no gracias" nunca haga avanzar de paso.
-const DECLINE_REGEX = /^(?:no|no,?\s+gracias|no\s+quiero(?:\s+(?:continuar|seguir|m[aá]s|nada))?|ya\s+no(?:\s+quiero)?|no\s+por\s+ahora|as[ií]\s+est[aá]\s+bien|est[aá]\s+bien\s+as[ií]|no\s+contin[uú]es?|no\s+sigas|suficiente|es\s+suficiente|ya\s+es\s+suficiente)[\s!.,]*$/i;
+const DECLINE_REGEX = /^(?:no|no,?\s+gracias|no\s+quiero(?:\s+(?:continuar|seguir|m[aá]s|nada))?|ya\s+no(?:\s+quiero)?|no\s+por\s+ahora|as[ií]\s+est[aá]\s+bien|est[aá]\s+bien\s+as[ií]|no\s+contin[uú]es?|no\s+sigas|suficiente|es\s+suficiente|ya\s+es\s+suficiente|n[ãa]o|n[ãa]o,?\s+obrigad[oa]|n[ãa]o\s+quero(?:\s+(?:continuar|seguir|mais|nada))?|agora\s+n[ãa]o|assim\s+est[áa]\s+bom|j[áa]\s+chega|chega|[ée]\s+suficiente|n[ãa]o\s+continue|n[ãa]o\s+precisa)[\s!.,]*$/i;
 
 function isDeclineMessage(question) {
   return DECLINE_REGEX.test((question || "").trim());
@@ -303,7 +305,7 @@ function isDeclineMessage(question) {
 
 const CONTACT_TOKEN_REGEX = /([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|https?:\/\/\S+|www\.\S+|\b(?:\+?\d[\d\s().-]{6,}\d)\b)/gi;
 const SHORT_NUMBER_REGEX = /\b\d{2,6}\b/g;
-const INSTITUTION_KEYWORD_REGEX = /\b(polic[ií]a|municipalidad|comisar[ií]a|serenazgo|demuna|defensor[ií]a|ministerio|hospital|centro de salud|l[ií]nea gratuita)\b/i;
+const INSTITUTION_KEYWORD_REGEX = /\b(polic[ií]a|pol[íi]cia|municipalidad|comisar[ií]a|serenazgo|demuna|defensor[ií]a|ministerio|minist[ée]rio|hospital|centro de salud|l[ií]nea gratuita|delegacia|conselho\s+tutelar|prefeitura|defensoria\s+p[úu]blica|posto\s+de\s+sa[úu]de|disque\s+\d+|cras|creas)\b/i;
 
 function normalizeContactToken(value) {
   return String(value || "").toLowerCase().replace(/[\s().-]+/g, "");
@@ -331,11 +333,11 @@ function hasUnsupportedContactInfo(response, sourceText) {
   return hasUnsupportedContact || hasUnsupportedShortNumber || hasUnsupportedInstitution;
 }
 
-function guardGroundedContactInfo(response, sourceText, orgName) {
+function guardGroundedContactInfo(response, sourceText, orgName, countryCode) {
   if (!hasUnsupportedContactInfo(response, sourceText)) return response;
   console.warn("⚠️ Respuesta con contacto no presente en Excel; usando fallback seguro.");
   return String(sourceText || "").trim()
-    || `Gracias por contarme. En este momento no cuento con un contacto especifico para orientarte por aqui. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
+    || strings(countryCode).contactFallback(orgName);
 }
 
 function sanitizeUserFacingResponse(response) {
@@ -345,6 +347,10 @@ function sanitizeUserFacingResponse(response) {
     .replace(/\b(en|desde|dentro de)\s+(la\s+)?base de (conocimiento|datos)\b/gi, "")
     .replace(/\b(la\s+)?respuesta fuente\b/gi, "la orientacion")
     .replace(/\bfuente\s+(recuperada|consultada)\b/gi, "orientacion")
+    // Variantes en portugués (BR)
+    .replace(/\s+(n[ao]|dentro d[ao])\s+(a\s+)?(planilha|Excel)\b/gi, "")
+    .replace(/\b(de acordo com|segundo)\s+(a\s+)?informa[çc][ãa]o dispon[íi]vel[,:\s]*/gi, "")
+    .replace(/\b(n[ao]|dentro d[ao])\s+(a\s+)?base de (conhecimento|dados)\b/gi, "")
     .replace(/\s{2,}/g, " ")
     .trim();
 }
@@ -455,7 +461,7 @@ function extractLocationAnswer(text) {
 }
 
 // Mensajes vagos que necesitan una pregunta de clarificación antes de buscar
-const VAGUE_REGEX = /^(necesito(\s+(ayuda|apoyo|orientaci[oó]n|informaci[oó]n))?|tengo(\s+un)?\s+(problema|duda|consulta|pregunta)|me\s+(pueden?|podr[ií]a[ns]?)\s*ayudar|b[úu]sco\s+(ayuda|apoyo|informaci[oó]n|orientaci[oó]n)|ayuda(\s+por\s+favor)?|ay[úu]dame|orientaci[oó]n|quiero\s+(informaci[oó]n|saber|ayuda))[.!,?]*\s*$/i;
+const VAGUE_REGEX = /^(necesito(\s+(ayuda|apoyo|orientaci[oó]n|informaci[oó]n))?|tengo(\s+un)?\s+(problema|duda|consulta|pregunta)|me\s+(pueden?|podr[ií]a[ns]?)\s*ayudar|b[úu]sco\s+(ayuda|apoyo|informaci[oó]n|orientaci[oó]n)|ayuda(\s+por\s+favor)?|ay[úu]dame|orientaci[oó]n|quiero\s+(informaci[oó]n|saber|ayuda)|preciso(\s+de\s+(ajuda|apoio|orienta[çc][ãa]o|informa[çc][ãa]o))?|tenho\s+(um\s+problema|uma\s+d[úu]vida|uma\s+pergunta)|pode[mn]?\s+me\s+ajudar|busco\s+(ajuda|apoio|informa[çc][ãa]o|orienta[çc][ãa]o)|me\s+ajuda|ajuda|orienta[çc][ãa]o|quero\s+(informa[çc][ãa]o|saber|ajuda))[.!,?]*\s*$/i;
 
 // ── Helper: genera embedding ──────────────────────────────────
 // OTel context propagation convierte este span en hijo del observation activo
@@ -867,14 +873,14 @@ REGLAS:
       max_tokens: isInitialPresentation ? 400 : 250,
       system: [
         { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-        { type: "text", text: systemText },
+        { type: "text", text: systemText + langDirective(countryCode) },
       ],
       messages: [...history, { role: "user", content: userTask }],
     });
 
     const rawResponse = msg.content[0]?.text || stepContent;
     const guardrailBlocked = hasUnsupportedContactInfo(rawResponse, stepContent);
-    const resp = guardGroundedContactInfo(rawResponse, stepContent, orgName);
+    const resp = guardGroundedContactInfo(rawResponse, stepContent, orgName, countryCode);
     obs.update({
       output: resp,
       model: CLAUDE_MODEL,
@@ -920,7 +926,7 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
 
     if (!currentStep) {
       await updateStep(state.id, state.current_step, "completed");
-      return { response: "¡Entendido! Si necesitas más ayuda, con gusto te orientamos.", metadata: { flow_type: "paso_a_paso" } };
+      return { response: strings(countryCode).stepDone(), metadata: { flow_type: "paso_a_paso" } };
     }
 
     // Resumen de todos los pasos + detalle completo solo del actual y el siguiente
@@ -984,7 +990,7 @@ REGLAS para el campo "respuesta":
       max_tokens: 350,
       system: [
         { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-        { type: "text", text: systemContext },
+        { type: "text", text: systemContext + langDirective(countryCode) },
       ],
       messages: [...history, { role: "user", content: question }],
     });
@@ -1054,7 +1060,7 @@ REGLAS ESTRICTAS:
 - No agregues instituciones, telefonos, numeros, correos, enlaces, ciudades, sedes, requisitos, beneficios ni canales que no aparezcan literalmente en RESPUESTA FUENTE.
 - Si la fuente pide un dato al usuario, conserva esa pregunta.
 - No digas "Excel", "base de datos", "base de conocimiento", "fuente", "respuesta fuente" ni "informacion disponible" al usuario.
-- Maximo 4 lineas. Sin markdown, listas ni emojis.`,
+- Maximo 4 lineas. Sin markdown, listas ni emojis.${langDirective(countryCode)}`,
         },
       ],
       messages: [
@@ -1072,7 +1078,7 @@ ${flow.answer}`,
 
     const rawResponse = msg.content[0]?.text || flow.answer;
     const guardrailBlocked = hasUnsupportedContactInfo(rawResponse, flow.answer);
-    const resp = guardGroundedContactInfo(rawResponse, flow.answer, orgName);
+    const resp = guardGroundedContactInfo(rawResponse, flow.answer, orgName, countryCode);
     obs.update({
       output: resp,
       model: CLAUDE_MODEL,
@@ -1109,7 +1115,7 @@ REGLAS ESTRICTAS:
 - Puedes reconocer la ubicación del usuario.
 - No inventes instituciones, sedes, teléfonos, números, correos, enlaces ni servicios específicos si no aparecen literalmente en RESPUESTA FUENTE.
 - No digas "Excel", "base de datos", "base de conocimiento", "fuente", "respuesta fuente" ni "informacion disponible" al usuario.
-- Maximo 4 lineas. Sin markdown, listas ni emojis.`,
+- Maximo 4 lineas. Sin markdown, listas ni emojis.${langDirective(countryCode)}`,
         },
       ],
       messages: [
@@ -1128,8 +1134,8 @@ ${flow.answer}`,
     });
 
     const rawResponse = msg.content[0]?.text
-      || `Gracias por decirme que estas en ${location}. Tu caso requiere atencion prioritaria. Es importante que puedas acercarte o contactar lo antes posible con servicios de apoyo en tu localidad para recibir orientacion, proteccion y acompanamiento.`;
-    const resp = guardGroundedContactInfo(rawResponse, `${flow.answer}\n${location}`, orgName);
+      || strings(countryCode).locationFollowupDefault(location);
+    const resp = guardGroundedContactInfo(rawResponse, `${flow.answer}\n${location}`, orgName, countryCode);
 
     obs.update({
       output: resp,
@@ -1161,13 +1167,13 @@ async function generateClarification(question, history, orgName, countryCode) {
         { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
         {
           type: "text",
-          text: `Organización activa: ${orgName}. País: ${countryCode}. El usuario envió un mensaje vago o ambiguo. Formula UNA SOLA pregunta empática y específica para entender mejor qué necesita, considerando el historial de la conversación si lo hay. La pregunta debe ser breve, cálida y directamente relacionada con lo que escribió el usuario. No respondas a ningún tema concreto todavía — solo haz la pregunta de clarificación.`,
+          text: `Organización activa: ${orgName}. País: ${countryCode}. El usuario envió un mensaje vago o ambiguo. Formula UNA SOLA pregunta empática y específica para entender mejor qué necesita, considerando el historial de la conversación si lo hay. La pregunta debe ser breve, cálida y directamente relacionada con lo que escribió el usuario. No respondas a ningún tema concreto todavía — solo haz la pregunta de clarificación.${langDirective(countryCode)}`,
         },
       ],
       messages,
     });
     const resp = msg.content[0]?.text
-      || `¿En qué área específica puedo orientarte sobre los servicios de ${orgName}?`;
+      || strings(countryCode).clarificationDefault(orgName);
     obs.update({
       output: resp,
       model: CLAUDE_MODEL,
@@ -1184,7 +1190,7 @@ async function generateClarification(question, history, orgName, countryCode) {
 // búsqueda semántica no pierda el tema. Solo mejora el retrieval; la respuesta
 // sigue basándose únicamente en el contenido recuperado. Devuelve null si no
 // aporta (mensaje ya autónomo, sin historial, o error).
-async function condenseQuestion(question, history) {
+async function condenseQuestion(question, history, countryCode) {
   if (!history || history.length === 0) return null;
 
   return startActiveObservation("claude-condense-question", async (obs) => {
@@ -1194,12 +1200,7 @@ async function condenseQuestion(question, history) {
         model: CLAUDE_MODEL,
         max_tokens: 80,
         temperature: 0,
-        system: `Reescribe el ÚLTIMO mensaje del usuario como una pregunta autónoma y breve en español, resolviendo referencias como "eso", "esas palabras", "y entonces", "y a qué edad" con el tema del historial.
-REGLAS:
-- NUNCA respondas la pregunta ni des información; tu única tarea es REESCRIBIRLA.
-- Devuelve SOLO la pregunta reformulada, sin comillas ni explicaciones.
-- Conserva la intención real; no agregues temas que el usuario no tocó.
-- Si el mensaje ya es una pregunta autónoma o no se relaciona con el historial, devuélvelo tal cual.`,
+        system: condenseSystem(countryCode),
         messages: [...history, { role: "user", content: question }],
       });
       const rewritten = (msg.content[0]?.text || "").trim().replace(/^["']|["']$/g, "");
@@ -1280,7 +1281,7 @@ async function askAI(userId, countryCode, question, options = {}) {
           let sanitizedResponse = sanitizeUserFacingResponse(response);
           // Anexa la fuente solo cuando el tema cambió (cite_source_url definido).
           if (metadata.cite_source_url) {
-            sanitizedResponse += `\n\nFuente: ${metadata.cite_source_url}`;
+            sanitizedResponse += `\n\n${strings(countryCode).sourceLabel()}: ${metadata.cite_source_url}`;
           }
           const responseStats = textMetrics(sanitizedResponse);
           const finalMetadata = {
@@ -1377,7 +1378,7 @@ async function askAI(userId, countryCode, question, options = {}) {
             // Saludo a media conversación: NO cancelar ni reiniciar el flujo.
             // Devolvemos un saludo breve que mantiene el contexto del paso actual.
             console.log(`👋 Saludo dentro de flujo activo — sin cancelar: ${activeState.flow_id} paso ${activeState.current_step}`);
-            const response = `¡Hola! Seguimos con tu consulta. ¿Quieres que continúe con el siguiente paso?`;
+            const response = strings(countryCode).smallTalkInFlow();
             return finishTrace(response, {
               search_type: "small_talk_in_flow",
               route: "active_flow_smalltalk",
@@ -1389,7 +1390,7 @@ async function askAI(userId, countryCode, question, options = {}) {
             // Rechazo explícito ("no", "no gracias"...) → cerrar el flujo sin avanzar.
             console.log(`🚫 Rechazo dentro de flujo — finalizando sin avanzar: ${activeState.flow_id} paso ${activeState.current_step}`);
             await updateStep(activeState.id, activeState.current_step, "completed");
-            const response = `¡Perfecto! Lo dejamos aquí. Si más adelante quieres retomar o tienes otra consulta, con gusto te oriento.`;
+            const response = strings(countryCode).declineInFlow();
             return finishTrace(response, {
               search_type: "decline",
               route: "active_flow_decline",
@@ -1417,7 +1418,7 @@ async function askAI(userId, countryCode, question, options = {}) {
             // Despedida/agradecimiento → cerrar el flujo con gracia (sin fallback frío).
             console.log(`🙏 Cierre dentro de flujo activo — finalizando: ${activeState.flow_id} paso ${activeState.current_step}`);
             await updateStep(activeState.id, activeState.current_step, "completed");
-            const response = `¡Con gusto! Me alegra haber podido ayudarte. Si necesitas algo más, aquí estaré.`;
+            const response = strings(countryCode).closingInFlow();
             return finishTrace(response, {
               search_type: "closing",
               route: "active_flow_closing",
@@ -1465,13 +1466,13 @@ async function askAI(userId, countryCode, question, options = {}) {
 
         // 1. SMALL TALK — solo si NO hay flujo activo
         if (SMALL_TALK_REGEX.test(question.trim())) {
-          const response = `¡Hola! Soy el asistente virtual de ${orgName}. ¿En qué puedo ayudarte hoy?`;
+          const response = strings(countryCode).smallTalk(orgName);
           return finishTrace(response, { search_type: "small_talk", route: "small_talk" });
         }
 
         // 2. CIERRE / AGRADECIMIENTO — despedida cálida en vez del fallback frío.
         if (isClosingMessage(question)) {
-          const response = `¡Con gusto! Me alegra haber podido orientarte. Si más adelante necesitas algo más, aquí estaré para ayudarte.`;
+          const response = strings(countryCode).closing();
           return finishTrace(response, { search_type: "closing", route: "closing" });
         }
 
@@ -1507,7 +1508,7 @@ async function askAI(userId, countryCode, question, options = {}) {
         // mensaje puede ser un seguimiento ("y a qué edad", "y entonces qué hago").
         // Reformulamos la pregunta con el historial y buscamos una vez más.
         if (!flow && history.length > 0) {
-          const condensed = await condenseQuestion(question, history);
+          const condensed = await condenseQuestion(question, history, countryCode);
           if (condensed && normalizeMessageText(condensed) !== normalizeMessageText(question)) {
             traceMetrics.condensed_query = condensed;
             const retried = await searchFlow(countryCode, condensed);
@@ -1534,29 +1535,6 @@ async function askAI(userId, countryCode, question, options = {}) {
             flow_question_chars: textMetrics(flow.question).chars,
             flow_answer_chars: textMetrics(flow.answer).chars,
           });
-
-          if (normalizedType === "informativa" || normalizedType === "seleccion") {
-            const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode);
-            const searchType = normalizedType === "informativa" ? "flow_informativa" : "flow_seleccion";
-            traceMetrics.guardrail_final_unsupported_contact = hasUnsupportedContactInfo(response, flow.answer) ? 1 : 0;
-            const sourceMeta = await buildSourceMeta(flow.flow_id);
-            if (sourceRequestsLocation(flow.answer)) {
-              // No cachear: la próxima pregunta debe entrar al follow-up de ubicación,
-              // no devolver la respuesta previa que aún pedía la ciudad.
-              await upsertState(userId, countryCode, flow.flow_id, `followup_location:${normalizedType}`, 0, 0);
-              traceMetrics.awaiting_location_followup = 1;
-            } else {
-              // Se cachea la respuesta BASE (sin link) + la fuente por separado.
-              setCached(countryCode, userId, question, response, getSourceLink(flow.flow_id));
-            }
-            return finishTrace(response, {
-              search_type: searchType,
-              route: "flow_grounded_rewrite",
-              flow_id: flow.flow_id,
-              tipo_respuesta: normalizedType,
-              ...sourceMeta,
-            });
-          }
 
           if (normalizedType === "paso a paso" || normalizedType === "paso_a_paso") {
             const { data: steps } = await supabase
@@ -1593,11 +1571,39 @@ async function askAI(userId, countryCode, question, options = {}) {
               ...(await buildSourceMeta(flow.flow_id)),
             });
           }
+
+          // Caso por defecto para cualquier otro tipo de respuesta: "informativa",
+          // "seleccion", "orientación y derivación", "informativa y derivación",
+          // "informativa y preventiva", etc. Se responde de forma puntual y
+          // fundamentada en la "Respuesta" del flow. Es el DEFAULT a propósito: un
+          // flow recuperado nunca debe caer al fallback por tener un tipo no previsto.
+          const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode);
+          const searchType = normalizedType === "informativa" ? "flow_informativa"
+            : normalizedType === "seleccion" ? "flow_seleccion"
+            : "flow_grounded";
+          traceMetrics.guardrail_final_unsupported_contact = hasUnsupportedContactInfo(response, flow.answer) ? 1 : 0;
+          const sourceMeta = await buildSourceMeta(flow.flow_id);
+          if (sourceRequestsLocation(flow.answer)) {
+            // No cachear: la próxima pregunta debe entrar al follow-up de ubicación,
+            // no devolver la respuesta previa que aún pedía la ciudad.
+            await upsertState(userId, countryCode, flow.flow_id, `followup_location:${normalizedType}`, 0, 0);
+            traceMetrics.awaiting_location_followup = 1;
+          } else {
+            // Se cachea la respuesta BASE (sin link) + la fuente por separado.
+            setCached(countryCode, userId, question, response, getSourceLink(flow.flow_id));
+          }
+          return finishTrace(response, {
+            search_type: searchType,
+            route: "flow_grounded_rewrite",
+            flow_id: flow.flow_id,
+            tipo_respuesta: normalizedType,
+            ...sourceMeta,
+          });
         }
 
         // 5. FALLBACK - solo Excel: sin flow recuperado no se llama al LLM.
         // Esto evita que el modelo invente telefonos, correos, sedes o links.
-        const noCtxResponse = `Gracias por contarme. En este momento no puedo orientarte con precision sobre eso por aqui. Te recomiendo comunicarte por los canales oficiales de ${orgName} para que puedan evaluar tu caso.`;
+        const noCtxResponse = strings(countryCode).fallbackNoExcel(orgName);
 
         return finishTrace(noCtxResponse, { search_type: "no_excel_match", route: "fallback_no_excel" });
       })

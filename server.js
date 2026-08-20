@@ -29,6 +29,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const express = require("express");
 const { askAI, saveConversationTurn } = require("./rag-service");
+const { strings, stepSummarySystem } = require("./lang");
 
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 
@@ -200,15 +201,14 @@ async function sendWhatsAppButton(to, bodyText, buttons, phoneNumberId, token) {
 // turno role="system" (invisible al historial/citas) con event=consent_accepted.
 const CONSENT_SESSION_MS = (Number(process.env.CONSENT_SESSION_HOURS) || 24) * 60 * 60 * 1000;
 const CONSENT_BUTTON_ID = "consent_continue";
-const CONSENT_TEXT_REGEX = /^\s*(continuar|acepto|aceptar|s[ií][\s,]+acepto|de acuerdo|estoy de acuerdo)\b/i;
+const CONSENT_TEXT_REGEX = /^\s*(continuar|acepto|aceptar|s[ií][\s,]+acepto|de acuerdo|estoy de acuerdo|aceito|aceitar|concordo|de acordo|estou de acordo|sim[\s,]+aceito)\b/i;
 
 function isConsentAcceptance(buttonId, text) {
   return buttonId === CONSENT_BUTTON_ID || CONSENT_TEXT_REGEX.test(text || "");
 }
 
-function buildConsentText(userName) {
-  const saludo = userName ? `Hola ${userName}` : "Hola";
-  return `${saludo}, soy el asistente virtual de Aldeas Infantiles SOS. Estoy aquí para orientarte sobre nuestros programas y servicios. Recuerda que tus consultas son confidenciales y se tratan con los estándares de seguridad y privacidad de la organización.\n\nPor favor, presiona el botón "Continuar" para comenzar 👇`;
+function buildConsentText(userName, countryCode) {
+  return strings(countryCode).consentText(userName);
 }
 
 async function hasRecentConsent(userId, countryCode) {
@@ -233,11 +233,11 @@ async function hasRecentConsent(userId, countryCode) {
   return (data || []).length > 0;
 }
 
-async function sendConsentCard(to, userName, phoneNumberId, token) {
+async function sendConsentCard(to, userName, phoneNumberId, token, countryCode) {
   await sendWhatsAppButton(
     to,
-    buildConsentText(userName),
-    [{ id: CONSENT_BUTTON_ID, title: "Continuar" }],
+    buildConsentText(userName, countryCode),
+    [{ id: CONSENT_BUTTON_ID, title: strings(countryCode).consentButtonTitle() }],
     phoneNumberId,
     token
   );
@@ -274,7 +274,7 @@ async function processStepsInBackground(flowId, answer, countryCode) {
     const summaryResponse = await anthropic.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 100,
-      system: "Resume el siguiente paso en máximo 2 líneas cortas y claras en español. Sin markdown.",
+      system: stepSummarySystem(countryCode),
       messages: [{
         role: "user",
         content: `Paso ${step.number} de ${steps.length}:\n${step.text}`,
@@ -380,7 +380,7 @@ async function handleIncomingMessage({ from, text, countryCode, phoneNumberId, t
     try {
       await sendWhatsAppMessage(
         from,
-        "Disculpa, estamos teniendo un problema técnico en este momento. Por favor intenta de nuevo en unos minutos.",
+        strings(countryCode).technicalError(),
         phoneNumberId,
         token
       );
@@ -408,8 +408,7 @@ async function handleConsentGate({ from, text, buttonId, userName, countryCode, 
         metadata: { event: "consent_accept", wa_message_id: messageId, phone_number_id: incomingPhoneNumberId },
       }).catch((err) => console.error("Error guardando aceptación:", err.message));
 
-      const saludo = userName ? `¡Gracias, ${userName}!` : "¡Gracias!";
-      const welcome = `${saludo} Soy el asistente virtual de Aldeas Infantiles SOS. Cuéntame en qué puedo orientarte hoy —sobre nuestros programas, servicios o cómo acceder a ellos.`;
+      const welcome = strings(countryCode).welcome(userName);
       await sendWhatsAppMessage(from, welcome, phoneNumberId, token);
       await saveConversationTurn({
         userId: from, countryCode, role: "assistant", message: welcome, source: "whatsapp",
@@ -427,8 +426,8 @@ async function handleConsentGate({ from, text, buttonId, userName, countryCode, 
           metadata: { event: "incoming_whatsapp_message", wa_message_id: messageId, phone_number_id: incomingPhoneNumberId },
         }).catch((err) => console.error("Error guardando entrante:", err.message));
       }
-      const card = buildConsentText(userName);
-      await sendConsentCard(from, userName, phoneNumberId, token);
+      const card = buildConsentText(userName, countryCode);
+      await sendConsentCard(from, userName, phoneNumberId, token, countryCode);
       await saveConversationTurn({
         userId: from, countryCode, role: "assistant", message: card, source: "whatsapp",
         metadata: { event: "consent_prompt", phone_number_id: incomingPhoneNumberId },
