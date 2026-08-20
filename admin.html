@@ -185,6 +185,21 @@
 
     function fmtTime(iso){ try{ return new Date(iso).toLocaleString("es-PE",{hour:"2-digit",minute:"2-digit"}); }catch{ return ""; } }
     function fmtDay(iso){ try{ return new Date(iso).toLocaleDateString("es-PE",{weekday:"long",day:"numeric",month:"long"}); }catch{ return ""; } }
+    // Fecha + hora del último mensaje, estilo WhatsApp: "Hoy 09:41 a. m.",
+    // "Ayer 05:05 p. m.", "18 ago 12:56 p. m." o con año si es de otro año.
+    function fmtWhen(iso){
+      try{
+        const d=new Date(iso), now=new Date();
+        const time=d.toLocaleString("es-PE",{hour:"2-digit",minute:"2-digit"});
+        const sameDay=(a,b)=>a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();
+        const yest=new Date(now); yest.setDate(now.getDate()-1);
+        if(sameDay(d,now)) return "Hoy "+time;
+        if(sameDay(d,yest)) return "Ayer "+time;
+        const sameYear=d.getFullYear()===now.getFullYear();
+        const day=d.toLocaleDateString("es-PE", sameYear?{day:"2-digit",month:"short"}:{day:"2-digit",month:"short",year:"numeric"});
+        return day+" "+time;
+      }catch{ return ""; }
+    }
     function initials(num){ const d=String(num).replace(/\D/g,""); return d.slice(-2) || "?"; }
     function linkify(text){
       const frag=document.createDocumentFragment();
@@ -397,7 +412,7 @@
         const main=document.createElement("div"); main.className="user-main";
         const top=document.createElement("div"); top.className="user-top";
         const name=document.createElement("div"); name.className="user-name"; name.textContent="+"+u.user_id+" ("+u.country_code+")";
-        const time=document.createElement("div"); time.className="user-time"; time.textContent=fmtTime(u.last_at);
+        const time=document.createElement("div"); time.className="user-time"; time.textContent=fmtWhen(u.last_at); time.title=fmtDay(u.last_at)+" "+fmtTime(u.last_at);
         top.append(name,time);
         const snip=document.createElement("div"); snip.className="user-snippet";
         snip.textContent=(u.last_role==="assistant"?"Asistente: ":"")+(u.last_message||"").replace(/\n/g," ");
