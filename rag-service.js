@@ -1278,11 +1278,10 @@ async function askAI(userId, countryCode, question, options = {}) {
         };
 
         const finishTrace = (response, metadata = {}) => {
-          let sanitizedResponse = sanitizeUserFacingResponse(response);
-          // Anexa la fuente solo cuando el tema cambió (cite_source_url definido).
-          if (metadata.cite_source_url) {
-            sanitizedResponse += `\n\n${strings(countryCode).sourceLabel()}: ${metadata.cite_source_url}`;
-          }
+          // La fuente NO se cita automáticamente. Se guarda source_url en la
+          // metadata (para poder entregarla si el usuario la pide luego), pero
+          // no se añade al texto de la respuesta.
+          const sanitizedResponse = sanitizeUserFacingResponse(response);
           const responseStats = textMetrics(sanitizedResponse);
           const finalMetadata = {
             ...traceMetrics,
@@ -1306,6 +1305,19 @@ async function askAI(userId, countryCode, question, options = {}) {
           const last = await getLastCited();
           return { source_url: url, ...(url !== last ? { cite_source_url: url } : {}) };
         };
+
+        // PETICIÓN EXPLÍCITA DE LA FUENTE — no se cita automáticamente, pero si
+        // la persona la pide ("dame la fuente", "la referencia", "el enlace",
+        // "de dónde sacaste eso"), se entrega la fuente del último tema tratado.
+        const SOURCE_REQUEST_REGEX = /(fuente|referencia|referencias|enlace|link|c[ií]ta(me)?|bibliograf[ií]a|de d[oó]nde (sacaste|obtuviste|viene|sale|proviene))/i;
+        if (question.trim().length <= 60 && SOURCE_REQUEST_REGEX.test(question)) {
+          const url = await getLastCited();
+          if (url) {
+            const response = `Con gusto. Esta orientación se basa en información de ${orgName}. Puedes consultarla aquí: ${url}`;
+            return finishTrace(response, { search_type: "source_request", route: "source_request", source_url: url });
+          }
+          // Sin fuente previa registrada → sigue el flujo normal.
+        }
 
         // 0. FLUJO ACTIVO — se evalúa primero.
         //    Si el mensaje es continuación clara → sigue el paso actual.
