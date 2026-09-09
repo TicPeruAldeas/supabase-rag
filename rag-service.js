@@ -4,7 +4,7 @@ const { createClient } = require("@supabase/supabase-js");
 const OpenAI = require("openai").default;
 const Anthropic = require("@anthropic-ai/sdk");
 const { getCached, setCached } = require("./cache");
-const { langDirective, strings, condenseSystem } = require("./lang");
+const { langDirective, strings, analysisSystem } = require("./lang");
 
 // Mapa flow_id → URL de la fuente (generado del Excel por ingest-excel.js).
 // Se cita la fuente solo la PRIMERA vez que se toca un tema; mientras el tema
@@ -63,6 +63,9 @@ if (process.env.LANGFUSE_PUBLIC_KEY && process.env.LANGFUSE_SECRET_KEY) {
 }
 
 const CLAUDE_MODEL = "claude-sonnet-4-6";
+// Modelo del módulo de comprensión (clasificación + reescritura en contexto).
+// Por defecto el mismo; se puede apuntar a uno más rápido/barato por env.
+const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL || CLAUDE_MODEL;
 
 const COUNTRY_ORGS = {
   PE: "Aldeas Infantiles SOS Perú",
@@ -230,7 +233,7 @@ PAUTAS DE RESPUESTA PARA ESTE ASISTENTE
 6. Máximo 4 líneas por respuesta. Sin formato markdown, sin asteriscos, sin viñetas.
 7. Cuando el usuario necesite atención personalizada (derivaciones, denuncias, casos urgentes), remítelo a los canales oficiales de la organización en su país.
 8. Si detectas una situación de urgencia o riesgo para un niño, indica claramente que debe contactar con las autoridades locales de protección infantil y con la sede de la organización de forma inmediata.
-9. USO DEL HISTORIAL DE CONVERSACIÓN: El historial previo sirve ÚNICAMENTE para recordar datos personales que el usuario ya compartió (nombre, ciudad, situación familiar) y mantener coherencia en el trato. Cada nueva pregunta del usuario debe evaluarse de forma independiente. El historial NO determina el tema de la nueva pregunta ni debe hacer que interpretes la nueva consulta como continuación del tema anterior.
+9. USO DEL HISTORIAL DE CONVERSACIÓN: Interpreta cada mensaje a la luz de la conversación y, en especial, de tu ÚLTIMA respuesta. Si el usuario dice "¿y eso?", "¿y qué tal sería?", "¿cuál me conviene?" o "¿cómo hago eso?", se refiere a lo que acabas de decirle: responde ese punto concreto sin repetir lo ya dicho. Si el usuario cambia de tema, atiende el tema nuevo sin arrastrar el anterior. Usa el historial también para recordar los datos que ya compartió (nombre, ciudad, situación familiar) y NO volver a pedírselos.
 
 ════════════════════════════════════════
 TEMAS DISPONIBLES Y BIENVENIDA
@@ -261,7 +264,7 @@ REGLA C — PREGUNTAR CIUDAD CUANDO EL FLOW LO INDIQUE
 Si el flow menciona ubicación, ciudad, sede, opciones cercanas o necesidad de saber dónde está el usuario, pregunta en qué ciudad se encuentra antes de continuar. No omitas esta pregunta si es necesaria para orientar el caso.
 
 REGLA D — RESPUESTAS BREVES PARA WHATSAPP
-Una sola idea principal por mensaje. Terminar con una sola pregunta concreta cuando sea necesario continuar. Evitar bloques de texto largos.
+Una sola idea principal por mensaje. Terminar con UNA sola pregunta concreta, y solo cuando sea necesaria para continuar; nunca dos preguntas en el mismo mensaje. Evitar bloques de texto largos.
 
 REGLA E — EL FLOW ES LA FUENTE DE VERDAD
 La respuesta final debe estar basada en el campo "Respuesta" del flow recuperado. No usar conocimiento externo para completar información. No agregar recomendaciones legales, migratorias, médicas o institucionales que no estén en el flow.
@@ -631,6 +634,32 @@ async function getLastCitedSource(userId, countryCode) {
   for (const row of data || []) {
     const url = row.metadata?.source_url;
     if (url) return url;
+  }
+  return null;
+}
+
+// ── Último tema tratado ───────────────────────────────────────
+// Devuelve el flow_id del último turno del asistente que respondió desde un
+// flow del Excel. Permite atender preguntas de seguimiento ("¿y qué tal
+// sería?", "¿y eso cuánto demora?") desde el MISMO contenido, aunque la
+// búsqueda semántica no lo recupere por sí sola. Se salta turnos sin flow
+// (saludos, cierres, clarificaciones) igual que getLastCitedSource.
+async function getLastFlowId(userId, countryCode) {
+  const { data, error } = await supabase
+    .from("conversations")
+    .select("metadata")
+    .eq("user_id", userId)
+    .eq("country_code", countryCode)
+    .eq("role", "assistant")
+    .order("created_at", { ascending: false })
+    .limit(15);
+  if (error) {
+    console.error(`⚠️  getLastFlowId [${userId}/${countryCode}]:`, error.message);
+    return null;
+  }
+  for (const row of data || []) {
+    const flowId = row.metadata?.flow_id;
+    if (flowId) return flowId;
   }
   return null;
 }
@@ -1042,9 +1071,21 @@ REGLAS para el campo "respuesta":
 // El LLM reformula la "Respuesta" del Excel de forma natural y empática,
 // sin agregar datos que no estén en la fuente. Los flows "paso a paso" se
 // manejan aparte en askAI (navegación guiada paso por paso).
-async function presentFlowWithLLM(flow, question, history, orgName, countryCode) {
+// context.standaloneQuery: la pregunta interpretada en contexto por el módulo
+// de comprensión (si difiere del texto literal). context.isFollowup: el
+// mensaje es un seguimiento de la última respuesta del asistente.
+async function presentFlowWithLLM(flow, question, history, orgName, countryCode, context = {}) {
+  const { standaloneQuery = null, isFollowup = false } = context;
+
   return startActiveObservation("claude-flow-grounded-response", async (obs) => {
-    obs.update({ input: { question, flow_type: flow.flow_type, flow_id: flow.flow_id } });
+    obs.update({ input: { question, standaloneQuery, isFollowup, flow_type: flow.flow_type, flow_id: flow.flow_id } });
+
+    const interpretation = standaloneQuery && normalizeMessageText(standaloneQuery) !== normalizeMessageText(question)
+      ? `\n\nInterpretación del mensaje en el contexto de la conversación:\n${standaloneQuery}`
+      : "";
+    const followupNote = isFollowup
+      ? "\n- El mensaje es un SEGUIMIENTO de tu respuesta anterior: contesta ese punto concreto y no repitas lo que ya dijiste."
+      : "";
 
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
@@ -1053,22 +1094,26 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode)
       system: [
         {
           type: "text",
-          text: `Eres un asistente de WhatsApp. Reescribe la respuesta fuente de forma natural y empatica para responder al usuario.
+          text: `Eres el asistente de WhatsApp de ${orgName}. Reescribe la RESPUESTA FUENTE de forma natural y empática para responder al usuario, teniendo en cuenta la conversación previa.
 
 REGLAS ESTRICTAS:
-- Usa unicamente la informacion de RESPUESTA FUENTE.
-- No agregues instituciones, telefonos, numeros, correos, enlaces, ciudades, sedes, requisitos, beneficios ni canales que no aparezcan literalmente en RESPUESTA FUENTE.
-- Si la fuente pide un dato al usuario, conserva esa pregunta.
-- No digas "Excel", "base de datos", "base de conocimiento", "fuente", "respuesta fuente" ni "informacion disponible" al usuario.
-- Maximo 4 lineas. Sin markdown, listas ni emojis.${langDirective(countryCode)}`,
+- Usa únicamente la información de RESPUESTA FUENTE.
+- No agregues instituciones, teléfonos, números, correos, enlaces, ciudades, sedes, requisitos, beneficios ni canales que no aparezcan literalmente en RESPUESTA FUENTE.
+- Responde a lo que el usuario pregunta AHORA (si hay una interpretación en contexto, guíate por ella).${followupNote}
+- Si RESPUESTA FUENTE no cubre el punto que pregunta, reconócelo con calidez y sin frases robóticas, ofrece lo que sí cubre y sugiere comunicarse por los canales oficiales de ${orgName}. Nunca inventes.
+- Si la fuente pide un dato al usuario (por ejemplo su ciudad) y aún no lo ha dado, pídeselo. Si ya lo dio en la conversación, no lo vuelvas a pedir.
+- Termina con UNA sola pregunta como máximo, y solo si hace falta para continuar.
+- No ofrezcas enviar pasos, listas, detalles o requisitos que no estén en RESPUESTA FUENTE; no prometas lo que no puedes entregar.
+- No digas "Excel", "base de datos", "base de conocimiento", "fuente", "respuesta fuente" ni "información disponible" al usuario.
+- Máximo 4 líneas. Sin markdown, listas ni emojis.${langDirective(countryCode)}`,
         },
       ],
       messages: [
         ...history,
         {
           role: "user",
-          content: `Pregunta del usuario:
-${question}
+          content: `Mensaje del usuario:
+${question}${interpretation}
 
 RESPUESTA FUENTE:
 ${flow.answer}`,
@@ -1184,35 +1229,78 @@ async function generateClarification(question, history, orgName, countryCode) {
   }, { asType: "generation" });
 }
 
-// ── Reformulación con contexto ────────────────────────────────
-// Reescribe un mensaje de seguimiento ("¿y entonces qué hago?", "dice esas
-// palabras") como una pregunta autónoma usando el historial, para que la
-// búsqueda semántica no pierda el tema. Solo mejora el retrieval; la respuesta
-// sigue basándose únicamente en el contenido recuperado. Devuelve null si no
-// aporta (mensaje ya autónomo, sin historial, o error).
-async function condenseQuestion(question, history, countryCode) {
+// ── Módulo de comprensión (NLU) ───────────────────────────────
+// Se ejecuta ANTES de decidir la ruta cuando hay historial. Interpreta el
+// mensaje a la luz de la conversación: por defecto el usuario reacciona a la
+// ÚLTIMA respuesta del asistente, pero puede cambiar de tema. Devuelve
+// {intent, standalone_query, topic_changed, location, confidence} o null si no
+// hay historial o falla (en ese caso se usan las heurísticas de texto de
+// siempre). Solo orienta el routing y el retrieval: la respuesta final sigue
+// basándose únicamente en el contenido recuperado del Excel.
+const ANALYSIS_INTENTS = new Set([
+  "followup", "new_topic", "location_answer", "continue", "decline",
+  "closing", "greeting", "vague", "source_request",
+]);
+const ANALYSIS_HISTORY_TURNS = 6; // últimos 3 pares user/assistant
+
+function parseAnalysis(raw, question) {
+  const match = String(raw || "").match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(match[0]);
+  } catch {
+    return null;
+  }
+  const intent = String(parsed.intent || "").toLowerCase().trim();
+  if (!ANALYSIS_INTENTS.has(intent)) return null;
+
+  const standalone = String(parsed.standalone_query || "").trim().replace(/^["']|["']$/g, "");
+  const location = parsed.location ? String(parsed.location).trim() : "";
+  const confidence = Number(parsed.confidence);
+  return {
+    intent,
+    standalone_query: standalone || String(question || "").trim(),
+    topic_changed: parsed.topic_changed === true,
+    location: location || null,
+    confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : null,
+  };
+}
+
+async function analyzeMessage(question, history, orgName, countryCode) {
   if (!history || history.length === 0) return null;
 
-  return startActiveObservation("claude-condense-question", async (obs) => {
-    obs.update({ input: question });
+  // Solo los últimos turnos: bastan para resolver referencias y abaratan la llamada.
+  let recent = history.slice(-ANALYSIS_HISTORY_TURNS);
+  const firstUser = recent.findIndex(m => m.role === "user");
+  if (firstUser > 0) recent = recent.slice(firstUser);
+
+  return startActiveObservation("claude-message-analysis", async (obs) => {
+    obs.update({ input: { question, history_turns: recent.length } });
+    const t0 = Date.now();
     try {
       const msg = await anthropic.messages.create({
-        model: CLAUDE_MODEL,
-        max_tokens: 80,
+        model: ANALYSIS_MODEL,
+        max_tokens: 200,
         temperature: 0,
-        system: condenseSystem(countryCode),
-        messages: [...history, { role: "user", content: question }],
+        system: analysisSystem(countryCode, orgName),
+        messages: [...recent, { role: "user", content: question }],
       });
-      const rewritten = (msg.content[0]?.text || "").trim().replace(/^["']|["']$/g, "");
+      const analysis = parseAnalysis(msg.content[0]?.text, question);
       obs.update({
-        output: rewritten,
-        model: CLAUDE_MODEL,
+        output: analysis,
+        model: ANALYSIS_MODEL,
         usageDetails: anthropicUsageDetails(msg.usage),
         costDetails: anthropicCostDetails(msg.usage),
       });
-      return rewritten || null;
+      if (analysis) {
+        console.log(`🧠 Comprensión (${Date.now() - t0}ms): ${analysis.intent}${analysis.topic_changed ? " (cambio de tema)" : ""} → "${analysis.standalone_query}"`);
+      } else {
+        console.warn("⚠️  analyzeMessage: respuesta no interpretable:", String(msg.content[0]?.text || "").slice(0, 120));
+      }
+      return analysis;
     } catch (err) {
-      console.error("⚠️  condenseQuestion:", err.message);
+      console.error("⚠️  analyzeMessage:", err.message);
       return null;
     }
   }, { asType: "generation" });
@@ -1325,6 +1413,29 @@ async function askAI(userId, countryCode, question, options = {}) {
         //    precomputedFlow evita hacer doble llamada a embeddings si ya se buscó aquí.
         let precomputedFlow = null;
 
+        // Historial (últimos 5 pares) disponible para todos los paths. Sobre él
+        // trabaja el módulo de comprensión, que se invoca de forma perezosa: las
+        // rutas triviales (continuación "sí", cierre "gracias"...) no lo pagan.
+        const history = await getRecentHistory(userId, countryCode, 10, question);
+        traceMetrics.history_turns = history.length;
+
+        let analysisPromise;
+        const getAnalysis = () => {
+          if (history.length === 0) return Promise.resolve(null);
+          if (!analysisPromise) analysisPromise = analyzeMessage(question, history, orgName, countryCode);
+          return analysisPromise;
+        };
+        const recordAnalysis = (analysis) => {
+          if (!analysis) return;
+          Object.assign(traceMetrics, {
+            analysis_intent: analysis.intent,
+            analysis_topic_changed: analysis.topic_changed ? 1 : 0,
+            analysis_confidence: analysis.confidence,
+            analysis_query: analysis.standalone_query,
+            ...(analysis.location ? { analysis_location: analysis.location } : {}),
+          });
+        };
+
         const activeState = await getActiveState(userId, countryCode);
         if (activeState && !(activeState.flow_type === "paso a paso" || activeState.flow_type === "paso_a_paso")) {
           const elapsed = Date.now() - new Date(activeState.updated_at).getTime();
@@ -1341,31 +1452,46 @@ async function askAI(userId, countryCode, question, options = {}) {
             console.log(`⏰ Flujo contextual expirado (>30 min): ${activeState.flow_id} — cancelando`);
             await updateStep(activeState.id, activeState.current_step, "cancelled");
             traceMetrics.active_flow_expired = 1;
-          } else if (String(activeState.flow_type || "").startsWith("followup_location") && isLikelyLocationAnswer(question) && !SMALL_TALK_REGEX.test(question.trim())) {
-            const flow = await getFlowById(countryCode, activeState.flow_id);
-            if (flow) {
-              const location = extractLocationAnswer(question);
-              const history = await getRecentHistory(userId, countryCode, 10, question);
-              traceMetrics.history_turns = history.length;
-              Object.assign(traceMetrics, {
-                retrieval_found: 1,
-                flow_id: flow.flow_id,
-                flow_type: flow.flow_type,
-                normalized_flow_type: "followup_location",
-                followup_location: location,
-              });
+          } else if (String(activeState.flow_type || "").startsWith("followup_location") && !SMALL_TALK_REGEX.test(question.trim())) {
+            // ¿Es realmente la ubicación que se pidió? Con historial lo decide el
+            // módulo de comprensión (evita tomar "y qué tal sería" por una ciudad);
+            // sin historial, la heurística de texto.
+            const analysis = await getAnalysis();
+            recordAnalysis(analysis);
+            const isLocation = analysis
+              ? analysis.intent === "location_answer" && !!analysis.location
+              : isLikelyLocationAnswer(question);
 
-              const response = await presentLocationFollowup(flow, location, question, history, orgName, countryCode);
-              await updateStep(activeState.id, activeState.current_step, "completed");
-              const followupUrl = getSourceLink(flow.flow_id);
-              return finishTrace(response, {
-                search_type: "flow_location_followup",
-                route: "flow_location_followup",
-                flow_id: flow.flow_id,
-                followup_location: location,
-                ...(followupUrl ? { source_url: followupUrl } : {}),
-              });
+            if (isLocation) {
+              const flow = await getFlowById(countryCode, activeState.flow_id);
+              if (flow) {
+                const location = analysis?.location || extractLocationAnswer(question);
+                Object.assign(traceMetrics, {
+                  retrieval_found: 1,
+                  flow_id: flow.flow_id,
+                  flow_type: flow.flow_type,
+                  normalized_flow_type: "followup_location",
+                  followup_location: location,
+                });
+
+                const response = await presentLocationFollowup(flow, location, question, history, orgName, countryCode);
+                await updateStep(activeState.id, activeState.current_step, "completed");
+                const followupUrl = getSourceLink(flow.flow_id);
+                return finishTrace(response, {
+                  search_type: "flow_location_followup",
+                  route: "flow_location_followup",
+                  flow_id: flow.flow_id,
+                  followup_location: location,
+                  ...(followupUrl ? { source_url: followupUrl } : {}),
+                });
+              }
+            } else if (analysis?.topic_changed) {
+              // Cambió de tema sin dar la ciudad → la espera de ubicación ya no aplica.
+              console.log(`🔀 Cambio de tema durante espera de ubicación — cerrando: ${activeState.flow_id}`);
+              await updateStep(activeState.id, activeState.current_step, "cancelled");
             }
+            // Seguimiento sin ubicación → sigue el flujo normal (el estado queda
+            // vigente por si la da en el próximo mensaje).
           }
         }
 
@@ -1441,7 +1567,14 @@ async function askAI(userId, countryCode, question, options = {}) {
           } else {
             // Mensaje más complejo → verificar si es una intención nueva
             console.log(`🔍 Mensaje complejo con flujo activo — verificando intención nueva`);
-            const candidate = await searchFlow(countryCode, question);
+            // El módulo de comprensión decide si sigue en el mismo tema (duda sobre
+            // el paso actual → se atiende dentro del flujo) o si cambió de tema
+            // (→ se busca la nueva intención con la pregunta interpretada).
+            const analysis = await getAnalysis();
+            recordAnalysis(analysis);
+            const candidate = analysis && !analysis.topic_changed
+              ? null
+              : await searchFlow(countryCode, analysis?.standalone_query || question);
             if (candidate) {
               Object.assign(traceMetrics, {
                 active_flow_new_intent_candidate_found: 1,
@@ -1488,47 +1621,109 @@ async function askAI(userId, countryCode, question, options = {}) {
           return finishTrace(response, { search_type: "closing", route: "closing" });
         }
 
-        // 3. CACHE (por usuario — la respuesta puede contener datos personales)
-        const cached = getCached(countryCode, userId, question);
-        if (cached) {
-          traceMetrics.cache_hit = 1;
-          // La cita se recalcula: aunque la respuesta esté cacheada, el link se
-          // incluye solo si el tema cambió respecto a la última fuente citada.
-          let citeMeta = {};
-          if (cached.sourceUrl) {
-            const last = await getLastCited();
-            citeMeta = { source_url: cached.sourceUrl, ...(cached.sourceUrl !== last ? { cite_source_url: cached.sourceUrl } : {}) };
+        // 3. COMPRENSIÓN EN CONTEXTO — con historial, el módulo de comprensión
+        //    interpreta el mensaje a la luz de la última respuesta del asistente:
+        //    resuelve intenciones conversacionales, reescribe la pregunta para el
+        //    retrieval y detecta si cambió de tema. Sin historial → null y se
+        //    aplican las heurísticas de texto (mensaje autónomo).
+        const analysis = precomputedFlow ? null : await getAnalysis();
+        recordAnalysis(analysis);
+        let searchQuery = question;
+        let isFollowup = false;
+
+        if (analysis) {
+          searchQuery = analysis.standalone_query || question;
+          isFollowup = analysis.intent === "followup" && !analysis.topic_changed;
+
+          if (analysis.intent === "closing") {
+            return finishTrace(strings(countryCode).closing(), { search_type: "closing", route: "closing_nlu" });
           }
-          return finishTrace(cached.value, { search_type: "cache", route: "cache", ...citeMeta });
+          if (analysis.intent === "greeting") {
+            return finishTrace(strings(countryCode).smallTalk(orgName), { search_type: "small_talk", route: "small_talk_nlu" });
+          }
+          if (analysis.intent === "decline") {
+            return finishTrace(strings(countryCode).declineInFlow(), { search_type: "decline", route: "decline_nlu" });
+          }
+          if (analysis.intent === "source_request") {
+            const url = await getLastCited();
+            if (url) {
+              const response = `Con gusto. Esta orientación se basa en información de ${orgName}. Puedes consultarla aquí: ${url}`;
+              return finishTrace(response, { search_type: "source_request", route: "source_request_nlu", source_url: url });
+            }
+          }
+          if (analysis.intent === "vague") {
+            const response = await generateClarification(question, history, orgName, countryCode);
+            return finishTrace(response, { search_type: "clarification", route: "clarification_nlu" });
+          }
+          if (analysis.intent === "location_answer" && analysis.location) {
+            // Dio su ubicación sin que hubiera una espera registrada → se retoma
+            // el último tema tratado y se responde con esa ubicación.
+            const lastFlowId = await getLastFlowId(userId, countryCode);
+            const lastFlow = lastFlowId ? await getFlowById(countryCode, lastFlowId) : null;
+            if (lastFlow) {
+              Object.assign(traceMetrics, {
+                retrieval_found: 1,
+                flow_id: lastFlow.flow_id,
+                flow_type: lastFlow.flow_type,
+                normalized_flow_type: "followup_location",
+                followup_location: analysis.location,
+              });
+              const response = await presentLocationFollowup(lastFlow, analysis.location, question, history, orgName, countryCode);
+              const followupUrl = getSourceLink(lastFlow.flow_id);
+              return finishTrace(response, {
+                search_type: "flow_location_followup",
+                route: "flow_location_followup_nlu",
+                flow_id: lastFlow.flow_id,
+                followup_location: analysis.location,
+                ...(followupUrl ? { source_url: followupUrl } : {}),
+              });
+            }
+          }
+          // "continue" sin flujo activo, "followup" y "new_topic" → retrieval
+          // con la pregunta interpretada en contexto.
         }
 
-        // Historial disponible para todos los paths a partir de aquí
-        const history = await getRecentHistory(userId, countryCode, 10, question);
-        traceMetrics.history_turns = history.length;
+        // 4. CACHE (por usuario — la respuesta puede contener datos personales).
+        //    Solo para consultas autónomas: un seguimiento depende del contexto
+        //    y no debe servirse desde cache.
+        if (!analysis || analysis.intent === "new_topic") {
+          const cached = getCached(countryCode, userId, question);
+          if (cached) {
+            traceMetrics.cache_hit = 1;
+            // La cita se recalcula: aunque la respuesta esté cacheada, el link se
+            // incluye solo si el tema cambió respecto a la última fuente citada.
+            let citeMeta = {};
+            if (cached.sourceUrl) {
+              const last = await getLastCited();
+              citeMeta = { source_url: cached.sourceUrl, ...(cached.sourceUrl !== last ? { cite_source_url: cached.sourceUrl } : {}) };
+            }
+            return finishTrace(cached.value, { search_type: "cache", route: "cache", ...citeMeta });
+          }
+        }
 
-        // 3.5 MENSAJE VAGO — pedir clarificación antes de buscar
-        if (VAGUE_REGEX.test(question.trim())) {
+        // 4.5 MENSAJE VAGO sin historial — pedir clarificación antes de buscar
+        //     (con historial ya lo decidió el módulo de comprensión).
+        if (!analysis && VAGUE_REGEX.test(question.trim())) {
           const response = await generateClarification(question, history, orgName, countryCode);
           return finishTrace(response, { search_type: "clarification", route: "clarification" });
         }
 
-        // 4. BUSCAR EN knowledge_flows (Excel)
-        // Si ya se buscó en el paso 0 (cambio de intención detectado), reutilizar sin re-embeddings.
-        let flow = precomputedFlow ?? await searchFlow(countryCode, question);
+        // 5. BUSCAR EN knowledge_flows (Excel) con la pregunta interpretada.
+        //    Si ya se buscó en el paso 0 (cambio de intención detectado), reutilizar sin re-embeddings.
+        traceMetrics.retrieval_query = searchQuery;
+        let flow = precomputedFlow ?? await searchFlow(countryCode, searchQuery);
 
-        // 4.5 REINTENTO CON CONTEXTO — si no hubo match y hay historial, el
-        // mensaje puede ser un seguimiento ("y a qué edad", "y entonces qué hago").
-        // Reformulamos la pregunta con el historial y buscamos una vez más.
-        if (!flow && history.length > 0) {
-          const condensed = await condenseQuestion(question, history, countryCode);
-          if (condensed && normalizeMessageText(condensed) !== normalizeMessageText(question)) {
-            traceMetrics.condensed_query = condensed;
-            const retried = await searchFlow(countryCode, condensed);
-            if (retried) {
-              flow = retried;
-              traceMetrics.condense_retry_hit = 1;
-              console.log(`🔁 Reintento con contexto: "${question}" → "${condensed}" → ${retried.flow_id}`);
-            }
+        // 5.5 SEGUIMIENTO SIN MATCH — es un seguimiento de la última respuesta y
+        //     la búsqueda no trajo nada: se responde desde el contenido del último
+        //     tema (el LLM contesta ese punto o reconoce que no lo cubre; nunca
+        //     inventa). Un flow "paso a paso" reutilizado NO reinicia sus pasos.
+        if (!flow && isFollowup) {
+          const lastFlowId = await getLastFlowId(userId, countryCode);
+          const lastFlow = lastFlowId ? await getFlowById(countryCode, lastFlowId) : null;
+          if (lastFlow) {
+            flow = { ...lastFlow, similarity: null, reused_last_topic: true };
+            traceMetrics.followup_reused_last_flow = 1;
+            console.log(`🔁 Seguimiento sin match — reutilizando último tema: ${lastFlow.flow_id}`);
           }
         }
 
@@ -1548,7 +1743,7 @@ async function askAI(userId, countryCode, question, options = {}) {
             flow_answer_chars: textMetrics(flow.answer).chars,
           });
 
-          if (normalizedType === "paso a paso" || normalizedType === "paso_a_paso") {
+          if ((normalizedType === "paso a paso" || normalizedType === "paso_a_paso") && !flow.reused_last_topic) {
             const { data: steps } = await supabase
               .from("knowledge_steps")
               .select("step_number, step_summary")
@@ -1589,7 +1784,10 @@ async function askAI(userId, countryCode, question, options = {}) {
           // "informativa y preventiva", etc. Se responde de forma puntual y
           // fundamentada en la "Respuesta" del flow. Es el DEFAULT a propósito: un
           // flow recuperado nunca debe caer al fallback por tener un tipo no previsto.
-          const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode);
+          const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode, {
+            standaloneQuery: searchQuery,
+            isFollowup,
+          });
           const searchType = normalizedType === "informativa" ? "flow_informativa"
             : normalizedType === "seleccion" ? "flow_seleccion"
             : "flow_grounded";
@@ -1600,13 +1798,14 @@ async function askAI(userId, countryCode, question, options = {}) {
             // no devolver la respuesta previa que aún pedía la ciudad.
             await upsertState(userId, countryCode, flow.flow_id, `followup_location:${normalizedType}`, 0, 0);
             traceMetrics.awaiting_location_followup = 1;
-          } else {
+          } else if (!isFollowup) {
             // Se cachea la respuesta BASE (sin link) + la fuente por separado.
+            // Un seguimiento no se cachea: su respuesta depende del contexto.
             setCached(countryCode, userId, question, response, getSourceLink(flow.flow_id));
           }
           return finishTrace(response, {
             search_type: searchType,
-            route: "flow_grounded_rewrite",
+            route: isFollowup ? "flow_grounded_followup" : "flow_grounded_rewrite",
             flow_id: flow.flow_id,
             tipo_respuesta: normalizedType,
             ...sourceMeta,
@@ -1631,4 +1830,5 @@ module.exports = {
   isContinuationMessage,
   isClosingMessage,
   isDeclineMessage,
+  parseAnalysis,
 };
