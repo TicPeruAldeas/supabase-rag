@@ -33,12 +33,20 @@ const { strings, stepSummarySystem } = require("./lang");
 
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 
-// App Secret de la app de Meta — valida la firma X-Hub-Signature-256 del webhook.
-// .trim(): Railway suele dejar un salto de línea/espacio al pegar el valor, lo
-// que rompe el HMAC. Lo limpiamos para evitar firmas inválidas con tráfico real.
-const META_APP_SECRET = (process.env.META_APP_SECRET || "").trim() || undefined;
-if (!META_APP_SECRET) {
-  console.warn("⚠️  META_APP_SECRET no configurado — el webhook NO verificará la firma de Meta (riesgo de mensajes falsos).");
+// App Secret(s) de Meta — validan la firma X-Hub-Signature-256 del webhook.
+// Se admiten VARIOS: META_APP_SECRET y META_APP_SECRET_2, _3, ... (o cualquier
+// sufijo). Un número en OTRA WhatsApp Business/app de Meta firma su webhook con
+// otro App Secret; la firma se acepta si coincide con CUALQUIERA de los
+// configurados. .trim(): Railway suele dejar un salto de línea/espacio al pegar
+// el valor, lo que rompe el HMAC.
+const META_APP_SECRETS = Object.entries(process.env)
+  .filter(([k, v]) => /^META_APP_SECRET(_[A-Z0-9]+)?$/.test(k) && String(v || "").trim())
+  .map(([, v]) => v.trim());
+
+if (META_APP_SECRETS.length === 0) {
+  console.warn("⚠️  Sin META_APP_SECRET(_*) — el webhook NO verificará la firma de Meta (riesgo de mensajes falsos).");
+} else {
+  console.log(`🔐 App Secrets configurados: ${META_APP_SECRETS.length}`);
 }
 
 const app = express();
@@ -50,28 +58,28 @@ app.use(express.urlencoded({ extended: true }));
 // Meta firma cada POST con HMAC-SHA256(appSecret, rawBody). Si la firma no
 // coincide, el mensaje no proviene de Meta y se rechaza.
 function verifyMetaSignature(req) {
-  if (!META_APP_SECRET) return true; // sin secret configurado no se puede validar (warning al arranque)
+  if (META_APP_SECRETS.length === 0) return true; // sin secret configurado no se puede validar (warning al arranque)
   const signature = req.headers["x-hub-signature-256"];
   if (!signature || !req.rawBody) {
     console.warn(`🔏 Firma ausente: header=${Boolean(signature)} rawBody=${Boolean(req.rawBody)}`);
     return false;
   }
 
-  const expected = "sha256=" + crypto
-    .createHmac("sha256", META_APP_SECRET)
-    .update(req.rawBody)
-    .digest("hex");
-
   const sigBuf = Buffer.from(signature);
-  const expBuf = Buffer.from(expected);
-  const ok = sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf);
+  // Se acepta si la firma coincide con CUALQUIERA de los App Secrets (una app u
+  // otra WhatsApp Business). timingSafeEqual requiere buffers de igual longitud.
+  const ok = META_APP_SECRETS.some((secret) => {
+    const expected = "sha256=" + crypto.createHmac("sha256", secret).update(req.rawBody).digest("hex");
+    const expBuf = Buffer.from(expected);
+    return sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf);
+  });
 
   if (!ok) {
     // Diagnóstico sin filtrar el secret: si rawBodyLen != contentLength → body
-    // alterado; si secretLen != 32 → valor mal pegado (debe ser 32 hex).
+    // alterado; si no coincide con ninguno → App Secret equivocado/mal pegado.
     console.warn(
-      `🔏 Firma inválida — recibida=${signature.slice(0, 16)}… esperada=${expected.slice(0, 16)}… ` +
-      `rawBodyLen=${req.rawBody.length} contentLength=${req.headers["content-length"]} secretLen=${META_APP_SECRET.length}`
+      `🔏 Firma inválida — recibida=${signature.slice(0, 16)}… ` +
+      `rawBodyLen=${req.rawBody.length} contentLength=${req.headers["content-length"]} secretsProbados=${META_APP_SECRETS.length}`
     );
   }
   return ok;
