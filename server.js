@@ -477,7 +477,11 @@ app.post("/webhook", (req, res) => {
   }
 
   const { countryCode, phoneNumberId, token } = countryConfig;
-  const from = message.from;
+  // WhatsApp "usernames": los mensajes enviados por nombre de usuario NO traen
+  // `from` (número), sino `from_user_id` (id opaco, p. ej. "PE.1092950830124536");
+  // el perfil trae `username` en vez del número. Se responde a ese mismo
+  // identificador. Aceptamos ambos formatos (número clásico y username).
+  const from = message.from || message.from_user_id;
   const userName = value?.contacts?.[0]?.profile?.name || null;
   const text = message.text?.body;
   // Respuesta a un botón/lista interactiva (p. ej. el botón "Continuar").
