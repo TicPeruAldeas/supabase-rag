@@ -156,6 +156,17 @@ function hasBearerSecret(req, secret) {
   return authHeader === `Bearer ${secret}` || apiKey === secret;
 }
 
+// ── Destinatario del envío ────────────────────────────────────
+// Un número clásico es solo dígitos → campo `to`. Un BSUID / username (formato
+// "CC.alfanumérico", p. ej. "PE.1092950830124536", de quien escribe por nombre
+// de usuario) va en `recipient` (+recipient_type) y se OMITE `to`, según la API
+// de Meta. Enviar un BSUID en `to` da error "The phone number is malformed".
+function whatsappRecipient(to) {
+  return /^\d+$/.test(String(to || ""))
+    ? { to: String(to) }
+    : { recipient_type: "individual", recipient: String(to) };
+}
+
 // ── Enviar mensaje por WhatsApp (usa credenciales del país) ───
 async function sendWhatsAppMessage(to, message, phoneNumberId, token) {
   const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
@@ -167,7 +178,7 @@ async function sendWhatsAppMessage(to, message, phoneNumberId, token) {
     },
     body: JSON.stringify({
       messaging_product: "whatsapp",
-      to,
+      ...whatsappRecipient(to),
       type: "text",
       text: { body: message },
     }),
@@ -188,7 +199,7 @@ async function sendWhatsAppButton(to, bodyText, buttons, phoneNumberId, token) {
     },
     body: JSON.stringify({
       messaging_product: "whatsapp",
-      to,
+      ...whatsappRecipient(to),
       type: "interactive",
       interactive: {
         type: "button",
