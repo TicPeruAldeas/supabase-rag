@@ -485,6 +485,18 @@ app.post("/webhook", (req, res) => {
 
   if (!text && !buttonId) return;
 
+  // Guard: mensaje sin remitente. Con un payload inesperado (sin `from`), más
+  // abajo fallaría el guardado (user_id null) y el envío (Meta: "to is required").
+  // Registramos la forma del mensaje para diagnosticar y salimos limpio.
+  if (!from) {
+    console.warn(
+      `⚠️  Webhook sin 'from' — type=${message.type} keys=[${Object.keys(message).join(",")}] ` +
+      `contacts=${JSON.stringify(value?.contacts || null).slice(0, 300)} ` +
+      `msg=${JSON.stringify(message).slice(0, 400)}`
+    );
+    return;
+  }
+
   // Descarta mensajes viejos: tras un redeploy, el dedup en memoria se borra y
   // Meta puede reentregar webhooks pendientes de mensajes antiguos. El timestamp
   // (hora en que el usuario lo envió) permite ignorarlos para no responder
