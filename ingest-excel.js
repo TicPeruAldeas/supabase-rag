@@ -8,6 +8,7 @@ const path = require("path");
 const fs = require("fs");
 const { buildFlowEmbeddingInput } = require("./embedding-text");
 const { stepSummarySystem } = require("./lang");
+const { mergeDatos } = require("./datos-text");
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -23,6 +24,10 @@ const CLAUDE_MODEL = "claude-sonnet-4-6";
 
 const COUNTRY_CODE = process.argv[2] || "PE";
 const FILE_PATH = process.argv[3] || "./Plantilla_Nueva.xlsx";
+// Prefijo opcional para los flow_id (p. ej. "XT-"). knowledge_flows tiene el
+// flow_id ÚNICO GLOBAL (no por país): un tenant de prueba que reutilice IDs de
+// otro país (PE-CT…) chocaría con él; con prefijo quedan únicos. Vacío = sin prefijo.
+const ID_PREFIX = process.argv[4] || "";
 
 // ── Parsear pasos de una celda ────────────────────────────────
 function parseSteps(text) {
@@ -68,9 +73,15 @@ async function generateEmbedding(text) {
 
 // ── Procesar una fila del Excel ───────────────────────────────
 async function processRow(row) {
-  const flowId = row["ID"]?.toString().trim();
+  const rawId = row["ID"]?.toString().trim();
+  const flowId = rawId ? ID_PREFIX + rawId : rawId;
   const question = row["Pregunta del usuario"]?.toString().trim();
   const answer = row["Respuesta"]?.toString().trim();
+  // Columna "Datos" (teléfonos, sedes, direcciones, correos, horarios, webs):
+  // información complementaria. Se guarda dentro de `answer` bajo una sección
+  // etiquetada (ver datos-text.js). Los pasos se parsean de la Respuesta original.
+  const datos = row["Datos"]?.toString().trim();
+  const storedAnswer = mergeDatos(answer, datos);
   const flowType = row["Tipo de respuesta"]?.toString().trim().toLowerCase()
     .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // quita tildes
   const category = row["Categoría"]?.toString().trim();
@@ -84,7 +95,8 @@ async function processRow(row) {
   console.log(`\n📋 Procesando: ${flowId} [${flowType}]`);
 
   // 1. Generar embedding del contenido completo del flow
-  const embeddingInput = buildFlowEmbeddingInput({ category, subtopic, question, answer });
+  // Incluye los Datos para que consultas como "¿cuál es el teléfono de…?" hagan match.
+  const embeddingInput = buildFlowEmbeddingInput({ category, subtopic, question, answer: storedAnswer });
   const embedding = await generateEmbedding(embeddingInput);
 
   // 2. Upsert en knowledge_flows
@@ -95,7 +107,7 @@ async function processRow(row) {
       category,
       subtopic: subtopic,
       question,
-      answer,
+      answer: storedAnswer,
       flow_type: flowType,
       country_code: COUNTRY_CODE,
       embedding,
@@ -156,7 +168,7 @@ async function processRow(row) {
 // ── Main ──────────────────────────────────────────────────────
 async function main() {
   console.log(`\n🚀 Ingestando Excel: ${FILE_PATH}`);
-  console.log(`🌍 País: ${COUNTRY_CODE}\n`);
+  console.log(`🌍 País: ${COUNTRY_CODE}${ID_PREFIX ? ` · prefijo de ID: ${ID_PREFIX}` : ""}\n`);
 
   const workbook = XLSX.readFile(path.resolve(FILE_PATH));
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -164,21 +176,26 @@ async function main() {
 
   console.log(`📊 ${rows.length} filas encontradas\n`);
 
-  // Regenera el mapa flow_id → URL de fuente (columna "LINK: FUENTE"/"Enlace")
-  // que usa el bot para citar la fuente. Se escribe siempre para no
-  // desincronizarse; si el Excel no trae esa columna, queda un objeto vacío.
-  const sourceLinks = {};
+  // Actualiza el mapa flow_id → URL de fuente (columna "LINK: FUENTE"/"Enlace")
+  // que usa el bot para citar la fuente. Se FUSIONA con el archivo existente:
+  // solo se tocan los IDs de este Excel. Antes se sobrescribía el archivo
+  // completo, lo que borraba los links de los OTROS países al ingestar uno.
+  // Si el Excel no trae esa columna, el archivo queda intacto.
+  const linksPath = path.resolve(__dirname, "source-links.json");
+  const newLinks = {};
   for (const row of rows) {
     const id = row["ID"]?.toString().trim();
     const url = (row["LINK: FUENTE"] ?? row["Enlace"] ?? "").toString().trim();
-    if (id && url) sourceLinks[id] = url;
+    if (id && url) newLinks[ID_PREFIX + id] = url;
   }
-  fs.writeFileSync(
-    path.resolve(__dirname, "source-links.json"),
-    JSON.stringify(sourceLinks, null, 2) + "\n",
-    "utf8"
-  );
-  console.log(`🔗 source-links.json actualizado: ${Object.keys(sourceLinks).length} fuentes\n`);
+  if (Object.keys(newLinks).length > 0) {
+    let existing = {};
+    try { existing = JSON.parse(fs.readFileSync(linksPath, "utf8")); } catch { /* sin archivo previo */ }
+    fs.writeFileSync(linksPath, JSON.stringify({ ...existing, ...newLinks }, null, 2) + "\n", "utf8");
+    console.log(`🔗 source-links.json actualizado: ${Object.keys(newLinks).length} fuentes de este Excel\n`);
+  } else {
+    console.log(`🔗 El Excel no trae columna de fuente; source-links.json queda intacto\n`);
+  }
 
   for (const row of rows) {
     await processRow(row);

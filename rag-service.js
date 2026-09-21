@@ -813,6 +813,10 @@ ${candidateText}`,
   }, { asType: "generation" });
 }
 
+// Columna "Datos" (contactos complementarios): viaja dentro de `answer` bajo una
+// sección etiquetada; ver datos-text.js.
+const { splitDatos, DATOS_HEADER } = require("./datos-text");
+
 async function getFlowById(countryCode, flowId) {
   const { data, error } = await supabase
     .from("knowledge_flows")
@@ -832,7 +836,7 @@ async function getFlowById(countryCode, flowId) {
 // Presentar un paso con LLM.
 // Presentacion inicial: lista pasos breves y desarrolla solo el paso actual.
 // Presentaciones siguientes o detalle: indicar "Paso N:" explicitamente.
-async function presentStepWithLLM(stepContent, { isDetail, isLastStep, question, history, orgName, countryCode, allSteps, currentStepNumber }) {
+async function presentStepWithLLM(stepContent, { isDetail, isLastStep, question, history, orgName, countryCode, allSteps, currentStepNumber, datos }) {
   return startActiveObservation("claude-step-response", async (obs) => {
     obs.update({ input: { isDetail, isLastStep, currentStepNumber } });
 
@@ -897,6 +901,16 @@ REGLAS:
       userTask = `Contenido del Paso ${currentStepNumber ?? ''}:\n${stepContent}`;
     }
 
+    // Datos de contacto del flow (columna "Datos"): complementarios a los pasos.
+    // El modelo solo los entrega si el usuario los pide o si son útiles para el
+    // paso; y el guardrail debe reconocerlos como fuente legítima (si no, un
+    // teléfono real que no esté en el texto del paso quedaría bloqueado).
+    const datosText = String(datos || "").trim();
+    if (datosText) {
+      systemText += `\n\nDATOS DE CONTACTO del proceso (complementarios; entrégalos EXACTOS solo si el usuario pide un teléfono, sede, dirección, correo o contacto, o si son claramente útiles para este paso; nunca los inventes ni modifiques):\n${datosText}`;
+    }
+    const guardSource = datosText ? `${stepContent}\n${datosText}` : stepContent;
+
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: isInitialPresentation ? 400 : 250,
@@ -908,8 +922,8 @@ REGLAS:
     });
 
     const rawResponse = msg.content[0]?.text || stepContent;
-    const guardrailBlocked = hasUnsupportedContactInfo(rawResponse, stepContent);
-    const resp = guardGroundedContactInfo(rawResponse, stepContent, orgName, countryCode);
+    const guardrailBlocked = hasUnsupportedContactInfo(rawResponse, guardSource);
+    const resp = guardGroundedContactInfo(rawResponse, guardSource, orgName, countryCode);
     obs.update({
       output: resp,
       model: CLAUDE_MODEL,
@@ -934,7 +948,7 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
     obs.update({ input: { step: state.current_step, total: state.total_steps, flow_id: state.flow_id } });
 
     // Historial y pasos en paralelo
-    const [history, stepsResult] = await Promise.all([
+    const [history, stepsResult, flowRow] = await Promise.all([
       getRecentHistory(userId, countryCode, 10, question),
       supabase
         .from("knowledge_steps")
@@ -942,7 +956,10 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
         .eq("flow_id", state.flow_id)
         .eq("country_code", countryCode)
         .order("step_number", { ascending: true }),
+      getFlowById(countryCode, state.flow_id),
     ]);
+    // Datos de contacto del flow (columna "Datos"), complementarios a los pasos.
+    const datos = splitDatos(flowRow?.answer).datos;
 
     const allSteps = stepsResult.data || [];
     const lastStepNumber = allSteps.length
@@ -974,6 +991,7 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
         countryCode,
         allSteps,
         currentStepNumber: nextNumber,
+        datos,
       });
       await updateStep(state.id, nextNumber, nextNumber >= lastStepNumber ? "completed" : "active");
       return {
@@ -993,7 +1011,7 @@ ${currentContent}
 
 ${nextContent ? `CONTENIDO DEL SIGUIENTE PASO (${followingStep.step_number}) — lo mostrarás solo si el usuario confirma:\n${nextContent}` : "ESTE ES EL ÚLTIMO PASO."}
 
-LÓGICA DE RESPUESTA:
+${datos ? `DATOS DE CONTACTO del proceso (complementarios; entrégalos EXACTOS solo si el usuario pide un teléfono, sede, dirección, correo o contacto, o si son claramente útiles para el paso; nunca los inventes ni modifiques):\n${datos}\n\n` : ""}LÓGICA DE RESPUESTA:
 1. Si el usuario dice "sí", "si", "siguiente", "continúa", "continua", "luego", "luego qué hago", "dime más", "paso ${state.current_step + 1}" u otra señal de querer continuar → mostrar el Paso ${state.current_step + 1} (accion: "siguiente")
 2. Si pide explícitamente ver TODOS los pasos ("dime todos los pasos", "mándame todo", "quiero ver todo el proceso", "dame el resumen completo") → mostrar todos con formato "Paso X de ${state.total_steps}" cada uno (accion: "todos")
 3. Si tiene dudas o pide más detalle del paso actual → explicar sin avanzar (accion: "detalle")
@@ -1009,6 +1027,7 @@ REGLAS para el campo "respuesta":
 - Un solo paso por mensaje (salvo accion "todos")
 - Reformular el contenido del Excel en lenguaje simple; no copiar literalmente
 - No agregar información fuera del Excel
+- Si el usuario pide un teléfono, sede, dirección, correo o contacto (o si es claramente útil para el paso), entrégalo EXACTO desde DATOS DE CONTACTO; nunca inventes ni modifiques esos datos
 - NO preguntar "¿ya hiciste este paso?" ni pedir confirmación de ejecución
 - No hagas preguntas cuya respuesta no cambie el contenido de los pasos siguientes. Si el flow tiene los mismos pasos independientemente de la respuesta del usuario, no preguntes por esa variable. Solo pregunta lo que realmente determina el siguiente paso según el contenido del flow
 - ${isLastStep ? 'Último paso. Cerrar con: "Esos son los pasos principales. ¿Tienes alguna duda sobre alguno de ellos?"' : ''}
@@ -1096,16 +1115,21 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode,
           type: "text",
           text: `Eres el asistente de WhatsApp de ${orgName}. Reescribe la RESPUESTA FUENTE de forma natural y empática para responder al usuario, teniendo en cuenta la conversación previa.
 
+RESPUESTA FUENTE tiene dos partes: la información PRINCIPAL y, si existe, una sección final "${DATOS_HEADER}" con datos COMPLEMENTARIOS (teléfonos, centrales, sedes, direcciones, horarios, correos, webs, canales).
+
 REGLAS ESTRICTAS:
-- Usa únicamente la información de RESPUESTA FUENTE.
-- No agregues instituciones, teléfonos, números, correos, enlaces, ciudades, sedes, requisitos, beneficios ni canales que no aparezcan literalmente en RESPUESTA FUENTE.
-- Responde a lo que el usuario pregunta AHORA (si hay una interpretación en contexto, guíate por ella).${followupNote}
+- Usa únicamente la información de RESPUESTA FUENTE (información principal + ${DATOS_HEADER}).
+- Responde en función de lo que el usuario pregunta AHORA, apoyándote en la información principal y complementándola con los datos de contacto cuando aporten (si hay una interpretación en contexto, guíate por ella).${followupNote}
+- Si el usuario pide explícitamente un teléfono, sede, dirección, correo, horario, web o contacto, búscalo en ${DATOS_HEADER} y entrégalo EXACTO tal como figura (sin abreviar, alterar ni completar).
+- Si no lo pide pero por el contexto ese dato le sirve para resolver su consulta (por ejemplo dónde ir o a quién llamar), inclúyelo siempre que esté en ${DATOS_HEADER}.
+- Si el usuario vuelve a preguntar lo mismo porque no entendió o quiere más detalle, responde de forma más clara y completa usando de nuevo la información principal y los datos de contacto.
+- No agregues, inventes ni modifiques instituciones, teléfonos, números, correos, enlaces, ciudades, sedes, horarios, requisitos, beneficios ni canales que no aparezcan literalmente en RESPUESTA FUENTE.
 - Si RESPUESTA FUENTE no cubre el punto que pregunta, reconócelo con calidez y sin frases robóticas, ofrece lo que sí cubre y sugiere comunicarse por los canales oficiales de ${orgName}. Nunca inventes.
 - Si la fuente pide un dato al usuario (por ejemplo su ciudad) y aún no lo ha dado, pídeselo. Si ya lo dio en la conversación, no lo vuelvas a pedir.
 - Termina con UNA sola pregunta como máximo, y solo si hace falta para continuar.
 - No ofrezcas enviar pasos, listas, detalles o requisitos que no estén en RESPUESTA FUENTE; no prometas lo que no puedes entregar.
 - No digas "Excel", "base de datos", "base de conocimiento", "fuente", "respuesta fuente" ni "información disponible" al usuario.
-- Máximo 4 líneas. Sin markdown, listas ni emojis.${langDirective(countryCode)}`,
+- Máximo 4 líneas, salvo cuando entregues datos de contacto: en ese caso inclúyelos completos y exactos aunque ocupen algo más. Sin markdown, listas ni emojis.${langDirective(countryCode)}`,
         },
       ],
       messages: [
@@ -1767,6 +1791,7 @@ async function askAI(userId, countryCode, question, options = {}) {
               isDetail: false, isLastStep: steps.length === 1,
               question, history, orgName, countryCode,
               allSteps: steps, currentStepNumber: 1,
+              datos: splitDatos(flow.answer).datos,
             });
             // La fuente se cita solo en el PRIMER paso (inicio del tema).
             return finishTrace(response, {

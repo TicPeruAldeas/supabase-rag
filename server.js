@@ -49,6 +49,9 @@ if (META_APP_SECRETS.length === 0) {
   console.log(`🔐 App Secrets configurados: ${META_APP_SECRETS.length}`);
 }
 
+// Columna "Datos" (contactos) de la base de conocimiento: ver datos-text.js.
+const { mergeDatos } = require("./datos-text");
+
 const app = express();
 // Guardamos el cuerpo crudo para poder verificar el HMAC de Meta byte a byte.
 app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
@@ -593,7 +596,7 @@ app.post("/ingest-row", async (req, res) => {
   }
 
   try {
-    const { ID, Categoria, Subtema, Pregunta, Respuesta, Tipo, country_code } = req.body;
+    const { ID, Categoria, Subtema, Pregunta, Respuesta, Datos, Tipo, country_code } = req.body;
 
     if (!ID || !Pregunta || !Respuesta || !Tipo) {
       return res.status(400).json({ error: "Faltan campos obligatorios: ID, Pregunta, Respuesta, Tipo" });
@@ -603,12 +606,16 @@ app.post("/ingest-row", async (req, res) => {
     const flowType = Tipo.toString().trim().toLowerCase()
       .normalize("NFD").replace(/[̀-ͯ]/g, "");
 
+    // "Datos" (teléfonos, sedes, correos…) va dentro de `answer` bajo una sección
+    // etiquetada; los pasos se parsean de la Respuesta original (ver datos-text.js).
+    const storedAnswer = mergeDatos(Respuesta, Datos);
+
     // Generar embedding con OpenAI (Anthropic no tiene API de embeddings)
     const embeddingInput = buildFlowEmbeddingInput({
       category: Categoria,
       subtopic: Subtema,
       question: Pregunta,
-      answer: Respuesta,
+      answer: storedAnswer,
     });
     const embeddingResponse = await openai.embeddings.create({
       model: "text-embedding-3-small",
@@ -624,7 +631,7 @@ app.post("/ingest-row", async (req, res) => {
         category: Categoria || null,
         subtopic: Subtema || null,
         question: Pregunta,
-        answer: Respuesta,
+        answer: storedAnswer,
         flow_type: flowType,
         country_code: rowCountryCode,
         embedding,
