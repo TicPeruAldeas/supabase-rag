@@ -286,6 +286,75 @@ function isContinuationMessage(question) {
   return CONTINUATION_REGEX.test((question || "").trim());
 }
 
+// ── Navegación explícita dentro de un paso a paso ────────────
+// "dame todos los pasos" / "mándame todo" → lista resumida y enumerada de
+// TODOS los pasos (se arma en código, no en JSON del modelo, para que nunca
+// se corte ni se filtre el JSON al usuario).
+const ALL_STEPS_REGEX = /\b(?:todos?\s+(?:los\s+)?pasos|todos?\s+(?:os\s+)?passos|todos?\s+(?:los|os)\s+\d+\s+pasos|todo\s+el\s+proceso|todo\s+o\s+processo|proceso\s+completo|processo\s+completo|resumen\s+completo|resumo\s+completo|lista\s+completa|lista\s+de\s+(?:los\s+)?pasos|m[aá]ndame\s+todo|manda\s+tudo|env[ií]ame\s+todo|dame\s+todo|dime\s+todo|me\s+d[aá]\s+tudo|todos\s+(?:de\s+una|juntos|de\s+una\s+vez)|de\s+una\s+vez\s+todo)\b/i;
+
+function isAllStepsRequest(question) {
+  const q = stripAccents(String(question || "").trim());
+  return ALL_STEPS_REGEX.test(q) || /^(?:todos|todo|tudo|todos\s+los\s+pasos)[.!?\s]*$/i.test(q);
+}
+
+// "paso 3", "más detalle del paso 5", "explícame el 7", "el tercero", "3" →
+// número de paso pedido (1..total) o null si no pide un paso concreto.
+const ORDINALS = {
+  primer: 1, primero: 1, primeiro: 1, segundo: 2, tercer: 3, tercero: 3, terceiro: 3,
+  cuarto: 4, quarto: 4, quinto: 5, sexto: 6, septimo: 7, setimo: 7, octavo: 8, oitavo: 8, noveno: 9, nono: 9, decimo: 10,
+};
+const STEP_NUMBER_REGEX = /\b(?:paso|passo|n[uú]mero|numero|nro\.?|n[°º])\s*(\d{1,2})\b/i;
+const STEP_ORDINAL_REGEX = /\b(?:el|o|del|do|al|ao)\s+(primer|primero|primeiro|segundo|tercer|tercero|terceiro|cuarto|quarto|quinto|sexto|septimo|setimo|octavo|oitavo|noveno|nono|decimo)(?:\s+paso|\s+passo)?\b/i;
+const BARE_NUMBER_REGEX = /^(?:el|o|la|a|del|do)?\s*(\d{1,2})\s*[.!?]*$/i;
+const LAST_STEP_REGEX = /\b(?:[uú]ltimo|ultimo|final)\s+(?:paso|passo)\b|\bel\s+[uú]ltimo\b|\bo\s+[uú]ltimo\b/i;
+
+function parseRequestedStep(question, totalSteps) {
+  const q = stripAccents(String(question || "").trim());
+  const total = Number(totalSteps) || 0;
+  let n = null;
+  const m1 = q.match(STEP_NUMBER_REGEX);
+  const m2 = q.match(BARE_NUMBER_REGEX);
+  const m3 = q.match(STEP_ORDINAL_REGEX);
+  if (m1) n = parseInt(m1[1], 10);
+  else if (m2) n = parseInt(m2[1], 10);
+  else if (m3) n = ORDINALS[m3[1].toLowerCase()] ?? null;
+  else if (total && LAST_STEP_REGEX.test(q)) n = total;
+  if (!n || n < 1) return null;
+  if (total && n > total) return null;
+  return n;
+}
+
+// El manejador de mensajes complejos pide al modelo un JSON {accion, respuesta}.
+// Si el JSON llega cortado o malformado, rescatamos el texto de "respuesta"
+// para no enviar nunca JSON crudo al usuario.
+function salvageStepJson(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return { accion: "detalle", respuesta: "" };
+  try {
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      return {
+        accion: String(parsed.accion ?? "detalle").toLowerCase().trim(),
+        respuesta: String(parsed.respuesta ?? "").trim(),
+      };
+    }
+  } catch {
+    // sigue al rescate manual
+  }
+  if (!text.startsWith("{")) return { accion: "detalle", respuesta: text };
+  const accionMatch = text.match(/"accion"\s*:\s*"([^"]*)"/i);
+  const respMatch = text.match(/"respuesta"\s*:\s*"([\s\S]*)$/i);
+  let respuesta = respMatch ? respMatch[1] : "";
+  respuesta = respuesta
+    .replace(/"\s*\}?\s*$/, "")
+    .replace(/\\n/g, "\n")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\")
+    .trim();
+  return { accion: (accionMatch?.[1] || "detalle").toLowerCase().trim(), respuesta, salvaged: true };
+}
+
 // Mensajes de cierre / agradecimiento ("gracias", "listo muchas gracias",
 // "chau", "todo claro"...). Reciben una despedida cálida en vez del fallback
 // frío de "no tengo información". En un flujo activo se evalúa DESPUÉS de la
@@ -1043,6 +1112,93 @@ REGLAS:
   }, { asType: "generation" });
 }
 
+// ── Lista resumida de TODOS los pasos ─────────────────────────
+// Fallback sin LLM: primera frase de cada resumen, enumerada.
+function firstSentence(text, max = 110) {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  const m = t.match(/^(.{15,}?[.!?])(\s|$)/);
+  let s = m ? m[1] : t;
+  if (s.length > max) s = s.slice(0, max - 1).replace(/[\s,;:]+\S*$/, "") + "…";
+  return s;
+}
+
+function formatAllStepsFallback(allSteps, countryCode) {
+  const steps = (allSteps || []).map(s => ({
+    number: s.number ?? s.step_number,
+    summary: s.summary ?? s.step_summary,
+  }));
+  const lines = steps.map(s => `${s.number}. ${firstSentence(s.summary)}`);
+  const t = strings(countryCode);
+  return `${t.allStepsIntro(steps.length)}\n\n${lines.join("\n")}\n\n${t.allStepsOutro()}`;
+}
+
+// El modelo condensa cada paso a UNA línea corta (numerada, en orden). Si la
+// salida no trae todos los números o falla, se usa el fallback determinista.
+async function presentAllStepsWithLLM(allSteps, { orgName, countryCode, datos }) {
+  const steps = (allSteps || []).map(s => ({
+    number: s.number ?? s.step_number,
+    summary: s.summary ?? s.step_summary,
+  }));
+  const fallback = formatAllStepsFallback(steps, countryCode);
+  if (!steps.length) return fallback;
+
+  return startActiveObservation("claude-all-steps-summary", async (obs) => {
+    obs.update({ input: { total: steps.length } });
+    const source = steps.map(s => `[${s.number}] ${s.summary}`).join("\n");
+    const t = strings(countryCode);
+    const systemText = `Organización: ${orgName}. País: ${countryCode}.
+El usuario pidió ver TODOS los pasos del proceso de una vez. Entrega una lista enumerada, ordenada y RESUMIDA.
+
+PASOS (fuente Excel):
+${source}
+
+FORMATO EXACTO (sin markdown, sin negritas, sin viñetas):
+${t.allStepsIntro(steps.length)}
+
+1. [una sola línea, máximo 15 palabras]
+2. [una sola línea, máximo 15 palabras]
+... hasta el ${steps.length}.
+
+${t.allStepsOutro()}
+
+REGLAS:
+- Exactamente ${steps.length} líneas numeradas, en el mismo orden, sin omitir ninguna
+- Cada línea resume la acción principal del paso en lenguaje simple; no copies literalmente
+- No agregues información fuera de la fuente ni teléfonos, direcciones o correos
+- No expliques ni desarrolles ningún paso: el detalle se da después si el usuario lo pide`;
+
+    try {
+      const msg = await anthropic.messages.create({
+        model: CLAUDE_MODEL,
+        max_tokens: 900,
+        system: [
+          { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+          { type: "text", text: systemText + langDirective(countryCode) },
+        ],
+        messages: [{ role: "user", content: "Dame todos los pasos resumidos." }],
+      });
+      const raw = (msg.content[0]?.text ?? "").trim();
+      const numbered = steps.every(s => new RegExp(`(^|\\n)\\s*${s.number}[.)]\\s`).test(raw));
+      const truncated = msg.stop_reason === "max_tokens";
+      const guardSource = source + "\n" + String(datos || "");
+      const invented = hasUnsupportedContactInfo(raw, guardSource);
+      const ok = raw && numbered && !truncated && !invented;
+      obs.update({
+        output: ok ? raw : fallback,
+        model: CLAUDE_MODEL,
+        metadata: { used_fallback: !ok, numbered, truncated, invented },
+        usageDetails: anthropicUsageDetails(msg.usage),
+        costDetails: anthropicCostDetails(msg.usage),
+      });
+      return ok ? raw : fallback;
+    } catch (err) {
+      console.error("❌ presentAllStepsWithLLM:", err.message);
+      obs.update({ output: fallback, metadata: { used_fallback: true, error: err.message } });
+      return fallback;
+    }
+  }, { asType: "generation" });
+}
+
 // ── Manejar PASO A PASO ───────────────────────────────────────
 // La IA conoce TODOS los pasos del proceso, entiende la respuesta natural
 // del usuario y decide qué presentar sin clasificadores rígidos.
@@ -1084,6 +1240,38 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
     const stepsOverview = allSteps.map(s => `[${s.step_number}] ${s.step_summary}`).join("\n");
     const currentContent = currentStep.step_detail || currentStep.step_summary;
     const nextContent = followingStep ? (followingStep.step_detail || followingStep.step_summary) : null;
+
+    // Navegación explícita: "todos los pasos" → lista resumida (el flujo sigue
+    // activo para que pueda pedir el detalle de uno); "paso N" → ese paso.
+    if (isAllStepsRequest(question)) {
+      const response = await presentAllStepsWithLLM(allSteps, { orgName, countryCode, datos });
+      await updateStep(state.id, state.current_step, "active");
+      return {
+        response,
+        metadata: { flow_type: "paso_a_paso", step: state.current_step, all_steps_overview: true },
+      };
+    }
+
+    const requestedStep = parseRequestedStep(question, lastStepNumber);
+    const requestedRow = requestedStep ? allSteps.find(s => s.step_number === requestedStep) : null;
+    if (requestedRow) {
+      const response = await presentStepWithLLM(requestedRow.step_detail || requestedRow.step_summary, {
+        isDetail: false,
+        isLastStep: requestedStep >= lastStepNumber,
+        question,
+        history,
+        orgName,
+        countryCode,
+        allSteps,
+        currentStepNumber: requestedStep,
+        datos,
+      });
+      await updateStep(state.id, requestedStep, "active");
+      return {
+        response,
+        metadata: { flow_type: "paso_a_paso", step: requestedStep, requested_step: requestedStep },
+      };
+    }
 
     if (isContinuationMessage(question) && followingStep) {
       const nextNumber = followingStep.step_number;
@@ -1140,7 +1328,7 @@ REGLAS para el campo "respuesta":
 
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
-      max_tokens: 350,
+      max_tokens: 600,
       system: [
         { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
         { type: "text", text: systemContext + langDirective(countryCode) },
@@ -1149,18 +1337,26 @@ REGLAS para el campo "respuesta":
     });
 
     const raw = (msg.content[0]?.text ?? "").trim();
-    let accion = "detalle";
-    let respuesta = raw;
+    let { accion, respuesta, salvaged } = salvageStepJson(raw);
+    if (salvaged) console.warn(`⚠️ JSON paso-a-paso cortado/malformado (stop=${msg.stop_reason}) — texto rescatado`);
 
-    try {
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        accion = (parsed.accion ?? "detalle").toLowerCase().trim();
-        respuesta = parsed.respuesta ?? raw;
-      }
-    } catch {
-      // JSON parse fallido — mantener respuesta raw sin avanzar
+    // "todos" decidido por el modelo → lista resumida generada en código (nunca
+    // el JSON del modelo, que con muchos pasos se corta).
+    if (accion === "todos") {
+      const overview = await presentAllStepsWithLLM(allSteps, { orgName, countryCode, datos });
+      await updateStep(state.id, state.current_step, "active");
+      return {
+        response: overview,
+        metadata: { flow_type: "paso_a_paso", step: state.current_step, all_steps_overview: true },
+      };
+    }
+    if (!respuesta || respuesta.startsWith("{")) {
+      // Sin texto utilizable → explicar el paso actual sin avanzar
+      respuesta = await presentStepWithLLM(currentContent, {
+        isDetail: true, isLastStep, question, history, orgName, countryCode, allSteps,
+        currentStepNumber: state.current_step, datos,
+      });
+      accion = "detalle";
     }
 
     console.log(`🎯 Acción paso-a-paso: ${accion} (${state.current_step}/${state.total_steps})`);
@@ -1176,9 +1372,6 @@ REGLAS para el campo "respuesta":
       isLastStep
         ? await updateStep(state.id, state.current_step, "completed")
         : await updateStep(state.id, state.current_step + 1);
-    } else if (accion === "todos") {
-      // Usuario pidió todos los pasos explícitamente → marcar como completado
-      await updateStep(state.id, state.total_steps, "completed");
     } else if (accion === "finalizar") {
       await updateStep(state.id, state.current_step, "completed");
     } else if (accion === "otro") {
@@ -1687,6 +1880,20 @@ async function askAI(userId, countryCode, question, options = {}) {
               step: activeState.current_step,
             });
 
+          } else if (isAllStepsRequest(question) || parseRequestedStep(question, activeState.total_steps)) {
+            // Navegación explícita ("todos los pasos", "paso 3") → sin retrieval ni análisis
+            console.log(`🧭 Navegación explícita en flujo: ${activeState.flow_id} — "${question}"`);
+            const result = await handlePasoAPaso(userId, countryCode, question, activeState);
+            if (result) {
+              const stepUrl = getSourceLink(activeState.flow_id);
+              return finishTrace(result.response, {
+                ...result.metadata,
+                search_type: "paso_a_paso",
+                route: "active_step_navigation",
+                ...(stepUrl ? { source_url: stepUrl } : {}),
+              });
+            }
+
           } else if (isContinuationMessage(question)) {
             // Señal de continuación explícita → seguir el paso actual sin retrieval
             console.log(`▶️ Continuación del flujo: ${activeState.flow_id} paso ${activeState.current_step}/${activeState.total_steps}`);
@@ -2005,4 +2212,8 @@ module.exports = {
   contactSearchTokens,
   findUnsupportedContact,
   parseAnalysis,
+  isAllStepsRequest,
+  parseRequestedStep,
+  salvageStepJson,
+  formatAllStepsFallback,
 };
