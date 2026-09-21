@@ -85,6 +85,15 @@ test("sanitizeUserFacingResponse: deja intacto un texto limpio", () => {
   assert.strictEqual(sanitizeUserFacingResponse(texto), texto);
 });
 
+test("sanitizeUserFacingResponse: conserva saltos de línea (listas, párrafos) y solo compacta espacios", () => {
+  const texto = "Resumen de los 3 pasos:\n\n1. Reúne documentos.\n2. Paga la tasa.  \n3. Presenta todo.\n\n\n\n¿Quieres más detalle?";
+  assert.strictEqual(
+    sanitizeUserFacingResponse(texto),
+    "Resumen de los 3 pasos:\n\n1. Reúne documentos.\n2. Paga la tasa.\n3. Presenta todo.\n\n¿Quieres más detalle?"
+  );
+  assert.strictEqual(sanitizeUserFacingResponse("Teléfono:   0800-12345\nWhatsApp: 12366"), "Teléfono: 0800-12345\nWhatsApp: 12366");
+});
+
 test("isContinuationMessage: reconoce confirmaciones de continuación", () => {
   for (const msg of ["sí", "si", "siguiente", "continúa", "ok", "👍"]) {
     assert.strictEqual(isContinuationMessage(msg), true, `"${msg}" debería ser continuación`);

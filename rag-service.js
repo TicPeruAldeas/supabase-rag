@@ -462,7 +462,11 @@ function sanitizeUserFacingResponse(response) {
     .replace(/\s+(n[ao]|dentro d[ao])\s+(a\s+)?(planilha|Excel)\b/gi, "")
     .replace(/\b(de acordo com|segundo)\s+(a\s+)?informa[çc][ãa]o dispon[íi]vel[,:\s]*/gi, "")
     .replace(/\b(n[ao]|dentro d[ao])\s+(a\s+)?base de (conhecimento|dados)\b/gi, "")
-    .replace(/\s{2,}/g, " ")
+    // Compactar espacios sin destruir los saltos de línea (listas, "Paso N:",
+    // datos de contacto en líneas separadas). Máximo una línea en blanco.
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]*\r?\n[ \t]*/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -1071,6 +1075,7 @@ REGLAS:
 - Reformula el contenido brevemente, sin copiar literalmente
 - No cambies datos concretos (direcciones, teléfonos, requisitos, instituciones)
 - No agregues información fuera del texto
+- Sé conciso (máximo 6 líneas) y nunca dejes una frase a medias; si incluyes un contacto, solo el que sea útil para este paso, no el bloque completo
 - ${isLastStep ? 'Es el último paso. Al terminar pregunta si necesita más ayuda.' : 'Termina con una pregunta concreta para continuar o aclarar dudas'}`;
       userTask = `Contenido del Paso ${currentStepNumber ?? ''}:\n${stepContent}`;
     }
@@ -1087,7 +1092,7 @@ REGLAS:
 
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
-      max_tokens: isInitialPresentation ? 400 : 250,
+      max_tokens: isInitialPresentation ? 400 : 420,
       system: [
         { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
         { type: "text", text: systemText + langDirective(countryCode) },
