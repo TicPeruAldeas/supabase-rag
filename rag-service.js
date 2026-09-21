@@ -399,8 +399,14 @@ function normalizeUrlsInSource(sourceText) {
 // Devuelve el PRIMER dato de contacto de la respuesta que NO está en la fuente
 // ({ kind, token }) o null. Es la base del guardrail; el token permite saber
 // qué disparó el bloqueo (trazas y logs) en vez de un simple true/false.
+// Referencias a pasos ("Paso 3 de 12", "los 10 pasos", "paso 5") no son datos
+// de contacto: se descartan antes de buscar números sueltos. Sin esto, el
+// "10" de "Paso 1 de 10" bloqueaba la presentación de cualquier flujo de 10
+// pasos cuyo texto fuente no contuviera ese número.
+const STEP_REFERENCE_REGEX = /\b(?:pasos?|passos?|etapas?)\s+\d{1,2}(?:\s+(?:de|a|al|y|e|ao)\s+\d{1,2})?\b|\b\d{1,2}\s+(?:pasos|passos|etapas)\b|\b\d{1,2}\s+de\s+\d{1,2}\b/gi;
+
 function findUnsupportedContact(response, sourceText) {
-  const text = String(response || "");
+  const text = String(response || "").replace(STEP_REFERENCE_REGEX, " ");
   const source = String(sourceText || "").toLowerCase();
   const normalizedSource = normalizeContactToken(sourceText);
   const urlSource = normalizeUrlsInSource(sourceText);
@@ -935,7 +941,7 @@ ${candidateText}`,
 
 // Columna "Datos" (contactos complementarios): viaja dentro de `answer` bajo una
 // sección etiquetada; ver datos-text.js.
-const { splitDatos, DATOS_HEADER } = require("./datos-text");
+const { splitDatos, mergeDatos, DATOS_HEADER } = require("./datos-text");
 
 async function getFlowById(countryCode, flowId) {
   const { data, error } = await supabase
@@ -1088,7 +1094,11 @@ REGLAS:
     if (datosText) {
       systemText += `\n\nDATOS DE CONTACTO del proceso (complementarios; entrégalos EXACTOS solo si el usuario pide un teléfono, sede, dirección, correo o contacto, o si son claramente útiles para este paso; nunca los inventes ni modifiques):\n${datosText}`;
     }
-    const guardSource = datosText ? `${stepContent}\n${datosText}` : stepContent;
+    // Fuente legítima para el guardrail: el paso actual + los resúmenes de los
+    // demás pasos (el modelo puede aludirlos) + "Datos" con su marcador, para
+    // que el fallback muestre el paso (no un volcado) y los contactos aparte.
+    const summariesText = steps.map(s => `[${s.number}] ${s.summary}`).join("\n");
+    const guardSource = mergeDatos(`${stepContent}\n${summariesText}`, datosText);
 
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
@@ -1101,13 +1111,16 @@ REGLAS:
     });
 
     const rawResponse = msg.content[0]?.text || stepContent;
-    const guardrailBlocked = hasUnsupportedContactInfo(rawResponse, guardSource);
-    const resp = guardGroundedContactInfo(rawResponse, guardSource, orgName, countryCode);
+    const offender = findUnsupportedContact(rawResponse, guardSource);
+    const guardrailBlocked = offender !== null;
+    const resp = guardGroundedContactInfo(rawResponse, guardSource, orgName, countryCode, offender);
     obs.update({
       output: resp,
       model: CLAUDE_MODEL,
       metadata: {
         guardrail_contact_blocked: guardrailBlocked,
+        guardrail_offender: offender ? `${offender.kind}:${offender.token}` : null,
+        stop_reason: msg.stop_reason,
         response_chars: textMetrics(resp).chars,
       },
       usageDetails: anthropicUsageDetails(msg.usage),
