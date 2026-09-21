@@ -314,32 +314,71 @@ function normalizeContactToken(value) {
   return String(value || "").toLowerCase().replace(/[\s().-]+/g, "");
 }
 
-function hasUnsupportedContactInfo(response, sourceText) {
-  const tokens = String(response || "").match(CONTACT_TOKEN_REGEX) || [];
-  const shortNumbers = String(response || "").match(SHORT_NUMBER_REGEX) || [];
-
-  const source = String(sourceText || "").toLowerCase();
-  const normalizedSource = normalizeContactToken(sourceText);
-
-  const hasUnsupportedContact = tokens.some((token) => {
-    const lowerToken = token.toLowerCase();
-    if (lowerToken.includes("@") || lowerToken.startsWith("http") || lowerToken.startsWith("www.")) {
-      return !source.includes(lowerToken);
-    }
-    return !normalizedSource.includes(normalizeContactToken(token));
-  });
-
-  const hasUnsupportedShortNumber = shortNumbers.some((token) => !source.includes(token.toLowerCase()));
-  const hasUnsupportedInstitution = INSTITUTION_KEYWORD_REGEX.test(response || "")
-    && !INSTITUTION_KEYWORD_REGEX.test(sourceText || "");
-
-  return hasUnsupportedContact || hasUnsupportedShortNumber || hasUnsupportedInstitution;
+// URLs: se comparan sin protocolo, sin "www." inicial y sin la puntuación final
+// que arrastra \S+ (p. ej. "www.sitio.org." al cerrar una frase). Antes esas
+// diferencias de formato hacían que respuestas correctas cayeran al fallback.
+const TRAILING_PUNCT_REGEX = /[.,;:!?)\]]+$/;
+function normalizeUrl(value) {
+  return String(value || "").toLowerCase()
+    .replace(/^https?:\/\//, "").replace(/^www\./, "")
+    .replace(TRAILING_PUNCT_REGEX, "").replace(/\/+$/, "");
+}
+function normalizeUrlsInSource(sourceText) {
+  return String(sourceText || "").toLowerCase().replace(/https?:\/\//g, "").replace(/\bwww\./g, "");
 }
 
-function guardGroundedContactInfo(response, sourceText, orgName, countryCode) {
-  if (!hasUnsupportedContactInfo(response, sourceText)) return response;
-  console.warn("⚠️ Respuesta con contacto no presente en Excel; usando fallback seguro.");
-  return String(sourceText || "").trim()
+// Devuelve el PRIMER dato de contacto de la respuesta que NO está en la fuente
+// ({ kind, token }) o null. Es la base del guardrail; el token permite saber
+// qué disparó el bloqueo (trazas y logs) en vez de un simple true/false.
+function findUnsupportedContact(response, sourceText) {
+  const text = String(response || "");
+  const source = String(sourceText || "").toLowerCase();
+  const normalizedSource = normalizeContactToken(sourceText);
+  const urlSource = normalizeUrlsInSource(sourceText);
+
+  for (const token of text.match(CONTACT_TOKEN_REGEX) || []) {
+    const lower = token.toLowerCase();
+    if (lower.includes("@")) {
+      if (!source.includes(lower.replace(TRAILING_PUNCT_REGEX, ""))) return { kind: "email", token };
+    } else if (lower.startsWith("http") || lower.startsWith("www.")) {
+      if (!urlSource.includes(normalizeUrl(lower))) return { kind: "url", token };
+    } else if (!normalizedSource.includes(normalizeContactToken(token))) {
+      return { kind: "phone", token };
+    }
+  }
+  for (const token of text.match(SHORT_NUMBER_REGEX) || []) {
+    if (!source.includes(token.toLowerCase())) return { kind: "number", token };
+  }
+  if (INSTITUTION_KEYWORD_REGEX.test(text) && !INSTITUTION_KEYWORD_REGEX.test(String(sourceText || ""))) {
+    return { kind: "institution", token: (text.match(INSTITUTION_KEYWORD_REGEX) || [""])[0] };
+  }
+  return null;
+}
+
+function hasUnsupportedContactInfo(response, sourceText) {
+  return findUnsupportedContact(response, sourceText) !== null;
+}
+
+// Corta un texto largo en el final de frase más cercano al límite.
+function truncateAtSentence(text, maxChars) {
+  const value = String(text || "").trim();
+  if (value.length <= maxChars) return value;
+  const cut = value.slice(0, maxChars);
+  const end = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf(".\n"), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
+  return end > maxChars * 0.5 ? cut.slice(0, end + 1).trim() : `${cut.trim()}…`;
+}
+
+// Fallback seguro cuando el guardrail bloquea. NO se vuelca la fuente completa:
+// con la columna "Datos" fusionada eso era un muro de texto que terminaba con la
+// etiqueta interna "DATOS DE CONTACTO:". Se entrega el inicio de la información
+// principal (cortado en una frase) y los datos de contacto tal cual la fuente.
+function guardGroundedContactInfo(response, sourceText, orgName, countryCode, offender = null) {
+  const found = offender || findUnsupportedContact(response, sourceText);
+  if (!found) return response;
+  console.warn(`⚠️ Respuesta con contacto no presente en Excel (${found.kind}: "${found.token}"); usando fallback seguro.`);
+  const { respuesta, datos } = splitDatos(sourceText);
+  const brief = truncateAtSentence(respuesta, 600);
+  return [brief, datos ? `Datos de contacto: ${datos}` : ""].filter(Boolean).join("\n\n").trim()
     || strings(countryCode).contactFallback(orgName);
 }
 
@@ -846,10 +885,18 @@ async function getFlowById(countryCode, flowId) {
 // web o contacto. Estas consultas se atienden desde la sección de Datos del flow
 // (reescritura fundamentada), sin iniciar un "paso a paso": pidió un dato, no un
 // proceso. Solo señales fuertes, para no desviar preguntas normales.
-const CONTACT_REQUEST_REGEX = /\b(tel[eé]fono(?:s)?|n[uú]mero(?:s)?|celular|whatsapp|central\s+telef[oó]nica|correo(?:s)?(?:\s+electr[oó]nico(?:s)?)?|e-?mail|direcci[oó]n(?:es)?|sede(?:s)?|oficina(?:s)?|horario(?:s)?|d[oó]nde\s+(?:queda|quedan|est[aá]|est[aá]n|atienden|puedo\s+(?:ir|acudir|acercarme))|p[aá]gina\s+web|sitio\s+web|enlace|link|contacto(?:s)?|contactar(?:me|los|se)?|comunicar(?:me|se|nos|te|le|les)?|qui[eé]n\s+(?:llamo|llamar|contacto|contactar)|llamar\s+(?:a|al)|marcar)\b/i;
+// El patrón va SIN tildes y el texto se compara sin acentos (NFD + quitar marcas
+// combinantes, como hace la normalización de flow_type). Así da igual que la
+// tilde llegue precompuesta ("é") o descompuesta ("e" + acento), o que el
+// usuario no la escriba: "teléfono", "telefono" y "teléfono" coinciden.
+const CONTACT_REQUEST_REGEX = /\b(telefono(?:s)?|numero(?:s)?|celular|whatsapp|central\s+telefonica|correo(?:s)?(?:\s+electronico(?:s)?)?|e-?mail|direccion(?:es)?|sede(?:s)?|oficina(?:s)?|horario(?:s)?|donde\s+(?:queda|quedan|esta|estan|atienden|puedo\s+(?:ir|acudir|acercarme))|pagina\s+web|sitio\s+web|enlace|link|contacto(?:s)?|contactar(?:me|los|se)?|comunicar(?:me|se|nos|te|le|les)?|quien\s+(?:llamo|llamar|contacto|contactar)|llamar\s+(?:a|al)|marcar)\b/i;
+
+function stripAccents(text) {
+  return String(text || "").normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
 
 function isContactRequest(text) {
-  return CONTACT_REQUEST_REGEX.test(String(text || ""));
+  return CONTACT_REQUEST_REGEX.test(stripAccents(text));
 }
 
 // Palabras de la consulta que identifican la institución/servicio pedido (se
@@ -863,7 +910,8 @@ const CONTACT_STOPWORDS = new Set(("cual cuál cuales cuáles como cómo donde d
   "puede quisiera podria podría podrian podrían ayuda ayudar informacion información").split(/\s+/));
 
 function contactSearchTokens(text) {
-  const words = String(text || "").toLowerCase().replace(/[^\p{L}\s]/gu, " ").split(/\s+/);
+  // NFC: la BD guarda las tildes precompuestas; un token descompuesto no haría match en ilike.
+  const words = String(text || "").normalize("NFC").toLowerCase().replace(/[^\p{L}\s]/gu, " ").split(/\s+/);
   return [...new Set(words.filter(w => w.length >= 4 && !CONTACT_STOPWORDS.has(w)))]
     .sort((a, b) => b.length - a.length)
     .slice(0, 4);
@@ -1166,7 +1214,7 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode,
       ? `\n- El usuario pide EXPLÍCITAMENTE un dato de contacto: respóndelo primero y de forma directa con el dato EXACTO de ${DATOS_HEADER} (institución + dato + web oficial si figura), en una o dos frases. Si ese dato concreto no figura, dilo con calidez y ofrece los canales que sí figuran; nunca lo inventes.`
       : "";
 
-    const msg = await anthropic.messages.create({
+    const request = {
       model: CLAUDE_MODEL,
       max_tokens: 450,
       temperature: 0,
@@ -1203,11 +1251,28 @@ RESPUESTA FUENTE:
 ${flow.answer}`,
         },
       ],
-    });
+    };
 
-    const rawResponse = msg.content[0]?.text || flow.answer;
-    const guardrailBlocked = hasUnsupportedContactInfo(rawResponse, flow.answer);
-    const resp = guardGroundedContactInfo(rawResponse, flow.answer, orgName, countryCode);
+    let msg = await anthropic.messages.create(request);
+    let rawResponse = msg.content[0]?.text || flow.answer;
+    let offender = findUnsupportedContact(rawResponse, flow.answer);
+    const guardrailBlocked = offender !== null;
+    let guardrailRetried = false;
+    if (offender) {
+      // Reintento ÚNICO con instrucción estricta (nombrando el dato que no figura)
+      // antes de caer al fallback: casi siempre el modelo solo reformateó un
+      // enlace/número o añadió una institución de memoria, y corrige a la primera.
+      guardrailRetried = true;
+      const strictNote = `\n- ATENCIÓN: tu borrador anterior incluyó "${offender.token}", que NO figura en RESPUESTA FUENTE. Responde de nuevo usando SOLO teléfonos, enlaces, correos, sedes e instituciones que aparezcan LITERALMENTE en RESPUESTA FUENTE, copiados tal cual; si tienes duda sobre un dato, omítelo.`;
+      const retryRequest = {
+        ...request,
+        system: request.system.map((block, i) => (i === 0 ? { ...block, text: block.text + strictNote } : block)),
+      };
+      msg = await anthropic.messages.create(retryRequest);
+      rawResponse = msg.content[0]?.text || flow.answer;
+      offender = findUnsupportedContact(rawResponse, flow.answer);
+    }
+    const resp = guardGroundedContactInfo(rawResponse, flow.answer, orgName, countryCode, offender);
     obs.update({
       output: resp,
       model: CLAUDE_MODEL,
@@ -1216,6 +1281,8 @@ ${flow.answer}`,
         flow_type: flow.flow_type,
         flow_similarity: flow.similarity ?? null,
         guardrail_contact_blocked: guardrailBlocked,
+        guardrail_retried: guardrailRetried,
+        guardrail_offender: offender ? `${offender.kind}:${offender.token}` : null,
         response_chars: textMetrics(resp).chars,
       },
       usageDetails: anthropicUsageDetails(msg.usage),
@@ -1936,5 +2003,6 @@ module.exports = {
   isDeclineMessage,
   isContactRequest,
   contactSearchTokens,
+  findUnsupportedContact,
   parseAnalysis,
 };

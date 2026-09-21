@@ -18,9 +18,19 @@ test("isContactRequest: detecta pedidos explícitos de teléfono, sede, direcci�
     "¿en qué horario atienden?",
     "¿a quién llamo si necesito ayuda?",
     "¿cómo me puedo comunicar con ellos?",
+    // tildes descompuestas (e/u + acento combinante), como pueden llegar de algunos teclados/transportes
+    "¿Cuál es el teléfono de Migraciones?",
+    "¿Me das el número de Migraciones?",
+    // sin tildes
+    "cual es el telefono de migraciones",
   ]) {
     assert.strictEqual(isContactRequest(msg), true, `"${msg}" debería ser consulta de contacto`);
   }
+});
+
+test("contactSearchTokens: normaliza a NFC para que el token case con la BD", () => {
+  const tokens = contactSearchTokens("¿Cuál es el teléfono de la Defensoría?");
+  assert.ok(tokens.includes("defensoría"), JSON.stringify(tokens));
 });
 
 test("isContactRequest: no marca preguntas normales de contenido", () => {
