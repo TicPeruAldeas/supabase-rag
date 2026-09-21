@@ -846,7 +846,7 @@ async function getFlowById(countryCode, flowId) {
 // web o contacto. Estas consultas se atienden desde la sección de Datos del flow
 // (reescritura fundamentada), sin iniciar un "paso a paso": pidió un dato, no un
 // proceso. Solo señales fuertes, para no desviar preguntas normales.
-const CONTACT_REQUEST_REGEX = /\b(tel[eé]fono(?:s)?|n[uú]mero(?:s)?|celular|whatsapp|central\s+telef[oó]nica|correo(?:s)?(?:\s+electr[oó]nico(?:s)?)?|e-?mail|direcci[oó]n(?:es)?|sede(?:s)?|oficina(?:s)?|horario(?:s)?|d[oó]nde\s+(?:queda|quedan|est[aá]|est[aá]n|atienden|puedo\s+(?:ir|acudir|acercarme))|p[aá]gina\s+web|sitio\s+web|enlace|link|contacto(?:s)?|contactar(?:me|los|se)?|comunicar(?:me|se|nos)|qu[ié]en\s+(?:llamo|llamar)|llamar\s+(?:a|al)|marcar)\b/i;
+const CONTACT_REQUEST_REGEX = /\b(tel[eé]fono(?:s)?|n[uú]mero(?:s)?|celular|whatsapp|central\s+telef[oó]nica|correo(?:s)?(?:\s+electr[oó]nico(?:s)?)?|e-?mail|direcci[oó]n(?:es)?|sede(?:s)?|oficina(?:s)?|horario(?:s)?|d[oó]nde\s+(?:queda|quedan|est[aá]|est[aá]n|atienden|puedo\s+(?:ir|acudir|acercarme))|p[aá]gina\s+web|sitio\s+web|enlace|link|contacto(?:s)?|contactar(?:me|los|se)?|comunicar(?:me|se|nos|te|le|les)?|qui[eé]n\s+(?:llamo|llamar|contacto|contactar)|llamar\s+(?:a|al)|marcar)\b/i;
 
 function isContactRequest(text) {
   return CONTACT_REQUEST_REGEX.test(String(text || ""));
