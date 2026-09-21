@@ -674,7 +674,7 @@ async function saveConversationTurn({ userId, countryCode, role, message, source
 
 // ── Buscar flow (Excel) ───────────────────────────────────────
 // OTel context propagation anida automáticamente embedText y supabase como hijos
-async function searchFlow(countryCode, question) {
+async function searchFlow(countryCode, question, opts = {}) {
   return startActiveObservation("search-flows", async (obs) => {
     obs.update({ input: question });
     const queryEmbedding = await embedText(question);
@@ -705,7 +705,7 @@ async function searchFlow(countryCode, question) {
       return results;
     });
 
-    const result = await chooseBestFlowCandidate(countryCode, question, candidates);
+    const result = await chooseBestFlowCandidate(countryCode, question, candidates, opts);
 
     obs.update({
       output: {
@@ -729,7 +729,7 @@ function truncateForRerank(text, maxChars = 900) {
   return value.length > maxChars ? `${value.slice(0, maxChars)}...` : value;
 }
 
-async function chooseBestFlowCandidate(countryCode, question, candidates) {
+async function chooseBestFlowCandidate(countryCode, question, candidates, opts = {}) {
   if (!Array.isArray(candidates) || candidates.length === 0) return null;
 
   const top = candidates[0];
@@ -759,17 +759,25 @@ tipo: ${item.flow_type}
 categoria: ${item.category ?? ""}
 subtema: ${item.subtopic ?? ""}
 pregunta: ${truncateForRerank(item.question, 500)}
-respuesta: ${truncateForRerank(item.answer, 900)}
+respuesta: ${truncateForRerank(splitDatos(item.answer).respuesta, 700)}
+datos_de_contacto: ${truncateForRerank(splitDatos(item.answer).datos, 300) || "(ninguno)"}
 `.trim()).join("\n\n");
+
+    // Si el usuario pide un dato de contacto, lo que importa es qué candidato
+    // TIENE ese dato en su sección de Datos, aunque su pregunta sea de otro trámite.
+    const contactHint = opts.contactRequest
+      ? `\nEl usuario pide un DATO DE CONTACTO (telefono, sede, direccion, correo, horario, web). Elige el candidato cuyo campo datos_de_contacto contenga la institucion o el servicio que pide, aunque su "pregunta" trate de otro tramite. Solo responde null si ningun candidato tiene ese dato.`
+      : "";
 
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 120,
       temperature: 0,
       system: `Eres un reranker estricto para un RAG. Debes elegir el candidato que mejor responde la intencion real del usuario.
+Cada candidato trae su "respuesta" (informacion principal) y sus "datos_de_contacto" (telefonos, sedes, direcciones, correos, horarios, webs).
 Responde SOLO JSON valido: {"flow_id":"...", "confidence":0.0}
 Si ningun candidato responde la intencion, usa {"flow_id":null, "confidence":0.0}.
-No elijas por coincidencias superficiales de palabras; prioriza significado, categoria, subtema y respuesta.`,
+No elijas por coincidencias superficiales de palabras; prioriza significado, categoria, subtema, respuesta y datos_de_contacto.${contactHint}`,
       messages: [
         {
           role: "user",
@@ -831,6 +839,55 @@ async function getFlowById(countryCode, flowId) {
   }
 
   return data || null;
+}
+
+// ── Consultas de contacto (columna "Datos") ───────────────────
+// El usuario pide EXPLÍCITAMENTE un teléfono, sede, dirección, correo, horario,
+// web o contacto. Estas consultas se atienden desde la sección de Datos del flow
+// (reescritura fundamentada), sin iniciar un "paso a paso": pidió un dato, no un
+// proceso. Solo señales fuertes, para no desviar preguntas normales.
+const CONTACT_REQUEST_REGEX = /\b(tel[eé]fono(?:s)?|n[uú]mero(?:s)?|celular|whatsapp|central\s+telef[oó]nica|correo(?:s)?(?:\s+electr[oó]nico(?:s)?)?|e-?mail|direcci[oó]n(?:es)?|sede(?:s)?|oficina(?:s)?|horario(?:s)?|d[oó]nde\s+(?:queda|quedan|est[aá]|est[aá]n|atienden|puedo\s+(?:ir|acudir|acercarme))|p[aá]gina\s+web|sitio\s+web|enlace|link|contacto(?:s)?|contactar(?:me|los|se)?|comunicar(?:me|se|nos)|qu[ié]en\s+(?:llamo|llamar)|llamar\s+(?:a|al)|marcar)\b/i;
+
+function isContactRequest(text) {
+  return CONTACT_REQUEST_REGEX.test(String(text || ""));
+}
+
+// Palabras de la consulta que identifican la institución/servicio pedido (se
+// descartan conectores y las propias palabras de "contacto"). Más largas primero.
+const CONTACT_STOPWORDS = new Set(("cual cuál cuales cuáles como cómo donde dónde cuando cuándo que qué quien quién quiénes para por con sin " +
+  "del los las una uno unos unas este esta esto estos estas ese esa eso hay tiene tienen puedo pueden quiero necesito saber " +
+  "dame dime pasa pasame pásame hola buenas buenos dias días tardes noches gracias favor porfa cuanto cuánto cuanta cuánta " +
+  "telefono teléfono telefonos teléfonos numero número numeros números celular whatsapp central correo correos email direccion " +
+  "dirección direcciones sede sedes oficina oficinas horario horarios pagina página sitio web enlace link contacto contactos " +
+  "contactar comunicarme comunicar llamar llamo marcar atienden queda quedan esta está están estan tengo tienes ellos ellas " +
+  "puede quisiera podria podría podrian podrían ayuda ayudar informacion información").split(/\s+/));
+
+function contactSearchTokens(text) {
+  const words = String(text || "").toLowerCase().replace(/[^\p{L}\s]/gu, " ").split(/\s+/);
+  return [...new Set(words.filter(w => w.length >= 4 && !CONTACT_STOPWORDS.has(w)))]
+    .sort((a, b) => b.length - a.length)
+    .slice(0, 4);
+}
+
+// Búsqueda por palabra clave DENTRO de la sección de Datos ("buscar principalmente
+// en la columna Datos"). Se usa cuando el usuario pide un contacto y el embedding
+// no encontró flow. El patrón `%DATOS DE CONTACTO:%token%` exige que el token
+// aparezca DESPUÉS del encabezado, es decir, en los Datos y no en la Respuesta.
+async function findFlowByDatosKeyword(countryCode, text) {
+  for (const token of contactSearchTokens(text)) {
+    const { data, error } = await supabase
+      .from("knowledge_flows")
+      .select("flow_id, country_code, flow_type, question, answer")
+      .eq("country_code", countryCode)
+      .ilike("answer", `%${DATOS_HEADER}%${token}%`)
+      .limit(1);
+    if (error) {
+      console.error(`⚠️  findFlowByDatosKeyword [${countryCode}/${token}]:`, error.message);
+      return null;
+    }
+    if (data && data.length > 0) return { ...data[0], similarity: null, datos_keyword: token };
+  }
+  return null;
 }
 
 // Presentar un paso con LLM.
@@ -1094,7 +1151,7 @@ REGLAS para el campo "respuesta":
 // de comprensión (si difiere del texto literal). context.isFollowup: el
 // mensaje es un seguimiento de la última respuesta del asistente.
 async function presentFlowWithLLM(flow, question, history, orgName, countryCode, context = {}) {
-  const { standaloneQuery = null, isFollowup = false } = context;
+  const { standaloneQuery = null, isFollowup = false, contactRequest = false } = context;
 
   return startActiveObservation("claude-flow-grounded-response", async (obs) => {
     obs.update({ input: { question, standaloneQuery, isFollowup, flow_type: flow.flow_type, flow_id: flow.flow_id } });
@@ -1105,10 +1162,13 @@ async function presentFlowWithLLM(flow, question, history, orgName, countryCode,
     const followupNote = isFollowup
       ? "\n- El mensaje es un SEGUIMIENTO de tu respuesta anterior: contesta ese punto concreto y no repitas lo que ya dijiste."
       : "";
+    const contactNote = contactRequest
+      ? `\n- El usuario pide EXPLÍCITAMENTE un dato de contacto: respóndelo primero y de forma directa con el dato EXACTO de ${DATOS_HEADER} (institución + dato + web oficial si figura), en una o dos frases. Si ese dato concreto no figura, dilo con calidez y ofrece los canales que sí figuran; nunca lo inventes.`
+      : "";
 
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
-      max_tokens: 260,
+      max_tokens: 450,
       temperature: 0,
       system: [
         {
@@ -1119,7 +1179,7 @@ RESPUESTA FUENTE tiene dos partes: la información PRINCIPAL y, si existe, una s
 
 REGLAS ESTRICTAS:
 - Usa únicamente la información de RESPUESTA FUENTE (información principal + ${DATOS_HEADER}).
-- Responde en función de lo que el usuario pregunta AHORA, apoyándote en la información principal y complementándola con los datos de contacto cuando aporten (si hay una interpretación en contexto, guíate por ella).${followupNote}
+- Responde en función de lo que el usuario pregunta AHORA, apoyándote en la información principal y complementándola con los datos de contacto cuando aporten (si hay una interpretación en contexto, guíate por ella).${followupNote}${contactNote}
 - Si el usuario pide explícitamente un teléfono, sede, dirección, correo, horario, web o contacto, búscalo en ${DATOS_HEADER} y entrégalo EXACTO tal como figura (sin abreviar, alterar ni completar).
 - Si no lo pide pero por el contexto ese dato le sirve para resolver su consulta (por ejemplo dónde ir o a quién llamar), inclúyelo siempre que esté en ${DATOS_HEADER}.
 - Si el usuario vuelve a preguntar lo mismo porque no entendió o quiere más detalle, responde de forma más clara y completa usando de nuevo la información principal y los datos de contacto.
@@ -1129,7 +1189,7 @@ REGLAS ESTRICTAS:
 - Termina con UNA sola pregunta como máximo, y solo si hace falta para continuar.
 - No ofrezcas enviar pasos, listas, detalles o requisitos que no estén en RESPUESTA FUENTE; no prometas lo que no puedes entregar.
 - No digas "Excel", "base de datos", "base de conocimiento", "fuente", "respuesta fuente" ni "información disponible" al usuario.
-- Máximo 4 líneas, salvo cuando entregues datos de contacto: en ese caso inclúyelos completos y exactos aunque ocupen algo más. Sin markdown, listas ni emojis.${langDirective(countryCode)}`,
+- Máximo 4 líneas, salvo cuando entregues datos de contacto: en ese caso inclúyelos completos y exactos aunque ocupen algo más. Aun así sé conciso: si el usuario solo pide un dato de contacto, dáselo directamente sin repetir toda la información principal. Nunca dejes una frase a medias. Sin markdown, listas ni emojis.${langDirective(countryCode)}`,
         },
       ],
       messages: [
@@ -1735,7 +1795,11 @@ async function askAI(userId, countryCode, question, options = {}) {
         // 5. BUSCAR EN knowledge_flows (Excel) con la pregunta interpretada.
         //    Si ya se buscó en el paso 0 (cambio de intención detectado), reutilizar sin re-embeddings.
         traceMetrics.retrieval_query = searchQuery;
-        let flow = precomputedFlow ?? await searchFlow(countryCode, searchQuery);
+        // ¿Pide explícitamente un dato de contacto? Se mira el mensaje literal y la
+        // interpretación (la reescritura puede perder la palabra "teléfono").
+        const contactRequest = isContactRequest(question) || isContactRequest(searchQuery);
+        if (contactRequest) traceMetrics.contact_request = 1;
+        let flow = precomputedFlow ?? await searchFlow(countryCode, searchQuery, { contactRequest });
 
         // 5.5 SEGUIMIENTO SIN MATCH — es un seguimiento de la última respuesta y
         //     la búsqueda no trajo nada: se responde desde el contenido del último
@@ -1748,6 +1812,18 @@ async function askAI(userId, countryCode, question, options = {}) {
             flow = { ...lastFlow, similarity: null, reused_last_topic: true };
             traceMetrics.followup_reused_last_flow = 1;
             console.log(`🔁 Seguimiento sin match — reutilizando último tema: ${lastFlow.flow_id}`);
+          }
+        }
+
+        // 5.6 CONSULTA DE CONTACTO SIN MATCH — pide un teléfono/sede/correo… y el
+        //     embedding no trajo flow: se busca por palabra clave dentro de la
+        //     sección de Datos ("buscar principalmente en la columna Datos").
+        if (!flow && contactRequest) {
+          flow = await findFlowByDatosKeyword(countryCode, question);
+          if (flow) {
+            traceMetrics.contact_keyword_hit = 1;
+            traceMetrics.contact_keyword = flow.datos_keyword;
+            console.log(`🔎 Contacto por palabra clave "${flow.datos_keyword}" → ${flow.flow_id}`);
           }
         }
 
@@ -1767,7 +1843,9 @@ async function askAI(userId, countryCode, question, options = {}) {
             flow_answer_chars: textMetrics(flow.answer).chars,
           });
 
-          if ((normalizedType === "paso a paso" || normalizedType === "paso_a_paso") && !flow.reused_last_topic) {
+          // Un "paso a paso" NO se inicia si el usuario pidió un dato de contacto:
+          // se le responde el dato (ruta fundamentada, más abajo), no el proceso.
+          if ((normalizedType === "paso a paso" || normalizedType === "paso_a_paso") && !flow.reused_last_topic && !contactRequest) {
             const { data: steps } = await supabase
               .from("knowledge_steps")
               .select("step_number, step_summary")
@@ -1812,6 +1890,7 @@ async function askAI(userId, countryCode, question, options = {}) {
           const response = await presentFlowWithLLM(flow, question, history, orgName, countryCode, {
             standaloneQuery: searchQuery,
             isFollowup,
+            contactRequest,
           });
           const searchType = normalizedType === "informativa" ? "flow_informativa"
             : normalizedType === "seleccion" ? "flow_seleccion"
@@ -1830,7 +1909,7 @@ async function askAI(userId, countryCode, question, options = {}) {
           }
           return finishTrace(response, {
             search_type: searchType,
-            route: isFollowup ? "flow_grounded_followup" : "flow_grounded_rewrite",
+            route: contactRequest ? "flow_contact_data" : isFollowup ? "flow_grounded_followup" : "flow_grounded_rewrite",
             flow_id: flow.flow_id,
             tipo_respuesta: normalizedType,
             ...sourceMeta,
@@ -1855,5 +1934,7 @@ module.exports = {
   isContinuationMessage,
   isClosingMessage,
   isDeclineMessage,
+  isContactRequest,
+  contactSearchTokens,
   parseAnalysis,
 };
