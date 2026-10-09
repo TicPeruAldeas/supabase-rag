@@ -28,7 +28,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const express = require("express");
-const { askAI, saveConversationTurn } = require("./rag-service");
+const { askAI, saveConversationTurn, buildTopicsMenu } = require("./rag-service");
 const { strings, stepSummarySystem } = require("./lang");
 
 const CLAUDE_MODEL = "claude-sonnet-4-6";
@@ -430,7 +430,13 @@ async function handleConsentGate({ from, text, buttonId, userName, countryCode, 
         metadata: { event: "consent_accept", wa_message_id: messageId, phone_number_id: incomingPhoneNumberId },
       }).catch((err) => console.error("Error guardando aceptación:", err.message));
 
-      const welcome = strings(countryCode).welcome(userName);
+      // Agente de prueba (XT): la bienvenida lista los temas de su base. Para
+      // los demás países el menú es "" y el texto no cambia. Un error no la bloquea.
+      const topics = await buildTopicsMenu(countryCode).catch((err) => {
+        console.error("⚠️  buildTopicsMenu:", err.message);
+        return "";
+      });
+      const welcome = strings(countryCode).welcome(userName, topics);
       await sendWhatsAppMessage(from, welcome, phoneNumberId, token);
       await saveConversationTurn({
         userId: from, countryCode, role: "assistant", message: welcome, source: "whatsapp",

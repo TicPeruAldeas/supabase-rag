@@ -4,7 +4,7 @@ const { createClient } = require("@supabase/supabase-js");
 const OpenAI = require("openai").default;
 const Anthropic = require("@anthropic-ai/sdk");
 const { getCached, setCached } = require("./cache");
-const { langDirective, strings, analysisSystem } = require("./lang");
+const { langDirective, strings, analysisSystem, usesRichFormat } = require("./lang");
 
 // Mapa flow_id → URL de la fuente (generado del Excel por ingest-excel.js).
 // Se cita la fuente solo la PRIMERA vez que se toca un tema; mientras el tema
@@ -78,7 +78,46 @@ const COUNTRY_ORGS = {
   AR: "Aldeas Infantiles SOS Argentina",
   PY: "Aldeas Infantiles SOS Paraguay",
   UY: "Aldeas Infantiles SOS Uruguay",
+  // País de PRUEBA: contenido propio (IDs XT-...), pero se presenta como Perú.
+  XT: "Aldeas Infantiles SOS Perú",
 };
+
+// ── Menú de temas (agente de prueba XT) ───────────────────────
+// Categorías de knowledge_flows del país en el orden de sus IDs (CT001,
+// CT002...), como líneas "• Tema". Solo para países con formato de viñetas
+// (lang.js); para el resto devuelve "" sin consultar la BD. Se cachea unos
+// minutos: tras una ingesta nueva las categorías aparecen al vencer la caché.
+const TOPICS_CACHE_TTL_MS = 10 * 60 * 1000;
+const topicsCache = new Map(); // país → { menu, ts }
+
+async function buildTopicsMenu(countryCode) {
+  if (!usesRichFormat(countryCode)) return "";
+  const hit = topicsCache.get(countryCode);
+  if (hit && Date.now() - hit.ts < TOPICS_CACHE_TTL_MS) return hit.menu;
+
+  const { data, error } = await supabase
+    .from("knowledge_flows")
+    .select("category")
+    .eq("country_code", countryCode)
+    .order("flow_id", { ascending: true });
+  if (error) {
+    console.error(`⚠️  buildTopicsMenu [${countryCode}]:`, error.message);
+    return hit?.menu || "";
+  }
+
+  const seen = new Set();
+  const lines = [];
+  for (const row of data || []) {
+    const name = String(row.category || "").trim().replace(/[.\s]+$/, "");
+    if (name && !seen.has(name.toLowerCase())) {
+      seen.add(name.toLowerCase());
+      lines.push(`• ${name}`);
+    }
+  }
+  const menu = lines.join("\n");
+  topicsCache.set(countryCode, { menu, ts: Date.now() });
+  return menu;
+}
 
 // ── System prompt estático (compartido entre países) ──────────
 // Supera los 2048 tokens requeridos por claude-sonnet-4-6 para activar
@@ -1510,7 +1549,8 @@ async function presentLocationFollowup(flow, location, question, history, orgNam
 
     const msg = await anthropic.messages.create({
       model: CLAUDE_MODEL,
-      max_tokens: 220,
+      // Las viñetas (agente de prueba XT) ocupan más tokens que 4 líneas.
+      max_tokens: usesRichFormat(countryCode) ? 400 : 220,
       temperature: 0,
       system: [
         {
@@ -1987,7 +2027,7 @@ async function askAI(userId, countryCode, question, options = {}) {
 
         // 1. SMALL TALK — solo si NO hay flujo activo
         if (SMALL_TALK_REGEX.test(question.trim())) {
-          const response = strings(countryCode).smallTalk(orgName);
+          const response = strings(countryCode).smallTalk(orgName, await buildTopicsMenu(countryCode));
           return finishTrace(response, { search_type: "small_talk", route: "small_talk" });
         }
 
@@ -2015,7 +2055,7 @@ async function askAI(userId, countryCode, question, options = {}) {
             return finishTrace(strings(countryCode).closing(), { search_type: "closing", route: "closing_nlu" });
           }
           if (analysis.intent === "greeting") {
-            return finishTrace(strings(countryCode).smallTalk(orgName), { search_type: "small_talk", route: "small_talk_nlu" });
+            return finishTrace(strings(countryCode).smallTalk(orgName, await buildTopicsMenu(countryCode)), { search_type: "small_talk", route: "small_talk_nlu" });
           }
           if (analysis.intent === "decline") {
             return finishTrace(strings(countryCode).declineInFlow(), { search_type: "decline", route: "decline_nlu" });
@@ -2210,7 +2250,7 @@ async function askAI(userId, countryCode, question, options = {}) {
 
         // 5. FALLBACK - solo Excel: sin flow recuperado no se llama al LLM.
         // Esto evita que el modelo invente telefonos, correos, sedes o links.
-        const noCtxResponse = strings(countryCode).fallbackNoExcel(orgName);
+        const noCtxResponse = strings(countryCode).fallbackNoExcel(orgName, await buildTopicsMenu(countryCode));
 
         return finishTrace(noCtxResponse, { search_type: "no_excel_match", route: "fallback_no_excel" });
       })
@@ -2220,6 +2260,8 @@ async function askAI(userId, countryCode, question, options = {}) {
 module.exports = {
   askAI,
   saveConversationTurn,
+  // Menú de temas para la bienvenida tras el consentimiento (server.js).
+  buildTopicsMenu,
   // Helpers puros expuestos para pruebas unitarias (sin efectos de red).
   hasUnsupportedContactInfo,
   sanitizeUserFacingResponse,

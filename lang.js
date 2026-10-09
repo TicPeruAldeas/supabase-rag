@@ -27,8 +27,34 @@ const LANG_DIRECTIVE = {
 IDIOMA DE RESPOSTA (OBRIGATÓRIO): Responda SEMPRE em português do Brasil (pt-BR), independentemente do idioma da fonte, do histórico ou da pergunta do usuário. Esta instrução anula qualquer indicação anterior de responder em espanhol. Mantenha um tom empático, caloroso e natural em português brasileiro.`,
 };
 
+// ── Agente de PRUEBA (XT) ─────────────────────────────────────
+// XT es el país de pruebas: se presenta como Perú y responde en mensajes cortos
+// con viñetas, y su saludo lista las categorías de su base de conocimiento.
+// PE, CO y BR NO cambian: para ellos la directiva de formato es "" y los textos
+// son los de siempre.
+const RICH_FORMAT_COUNTRIES = new Set(["XT"]);
+
+function usesRichFormat(countryCode) {
+  return RICH_FORMAT_COUNTRIES.has(String(countryCode || "").toUpperCase());
+}
+
+// Se anexa (junto a la directiva de idioma) al final de cada prompt de
+// generación, así que tiene prioridad sobre "máximo 4 líneas / sin listas".
+const RICH_FORMAT_DIRECTIVE = `
+
+FORMATO DE RESPUESTA PARA WHATSAPP (OBLIGATORIO; reemplaza cualquier indicación anterior de "sin listas", "sin viñetas" o "máximo 4 líneas"):
+- Empieza con UNA frase corta que responda o enmarque la consulta.
+- Si hay varios datos, requisitos u opciones, lístalos en viñetas: cada línea empieza con "• " y tiene una sola idea corta (máximo 15 palabras).
+- Entre 2 y 5 viñetas; si hay más contenido, elige lo más importante para la persona.
+- Deja una línea en blanco entre la frase inicial, las viñetas y el cierre.
+- Si hace falta continuar, cierra con UNA pregunta corta.
+- Puedes resaltar una palabra clave con *asteriscos simples* (negrita de WhatsApp), con moderación. No uses "**", títulos con "#" ni tablas.
+- Si las instrucciones anteriores piden un formato exacto (por ejemplo "Paso X de N:" o un JSON), respétalo y aplica las viñetas solo dentro del texto de la explicación.
+- Si solo debes hacer una pregunta, hazla en una sola frase, sin viñetas.`;
+
 function langDirective(countryCode) {
-  return LANG_DIRECTIVE[getLang(countryCode)] || "";
+  const format = usesRichFormat(countryCode) ? RICH_FORMAT_DIRECTIVE : "";
+  return (LANG_DIRECTIVE[getLang(countryCode)] || "") + format;
 }
 
 // ── Textos de cara al usuario ─────────────────────────────────
@@ -88,8 +114,34 @@ const STRINGS = {
   },
 };
 
+// Textos propios de un país que reemplazan a los de su idioma. Las funciones
+// que listan temas reciben `topics` (líneas "• Tema" o ""); los textos base
+// ignoran ese argumento, por eso se puede pasar siempre.
+const COUNTRY_STRINGS = {
+  XT: {
+    consentText: (userName) => {
+      const saludo = userName ? `Hola ${userName}` : "Hola";
+      return `${saludo}, soy el agente Perú Multipaís de Aldeas Infantiles SOS. Te brindo información y orientación para que sepas a dónde acudir. Tus consultas son confidenciales.\n\nPresiona "Continuar" para comenzar 👇`;
+    },
+    welcome: (userName, topics) => {
+      const saludo = userName ? `¡Gracias, ${userName}!` : "¡Gracias!";
+      return topics
+        ? `${saludo} Puedo orientarte sobre estos temas:\n\n${topics}\n\nCuéntame tu consulta con tus propias palabras.`
+        : `${saludo} Cuéntame tu consulta con tus propias palabras y te oriento.`;
+    },
+    smallTalk: (org, topics) => topics
+      ? `¡Hola! Soy el agente Perú Multipaís de ${org}. Puedo orientarte sobre estos temas:\n\n${topics}\n\nCuéntame tu consulta con tus propias palabras.`
+      : `¡Hola! Soy el agente Perú Multipaís de ${org}. ¿En qué puedo orientarte hoy?`,
+    fallbackNoExcel: (org, topics) => topics
+      ? `Gracias por contarme. No tengo una orientación precisa sobre eso por aquí.\n\nPuedo ayudarte con estos temas:\n\n${topics}\n\nSi tu caso es otro, te recomiendo comunicarte por los canales oficiales de ${org}.`
+      : STRINGS.es.fallbackNoExcel(org),
+  },
+};
+
 function strings(countryCode) {
-  return STRINGS[getLang(countryCode)] || STRINGS.es;
+  const base = STRINGS[getLang(countryCode)] || STRINGS.es;
+  const own = COUNTRY_STRINGS[String(countryCode || "").toUpperCase()];
+  return own ? { ...base, ...own } : base;
 }
 
 // ── System prompt para el resumen de pasos (ingest / background) ──
@@ -162,6 +214,7 @@ function analysisSystem(countryCode, orgName) {
 
 module.exports = {
   getLang,
+  usesRichFormat,
   langDirective,
   strings,
   stepSummarySystem,
