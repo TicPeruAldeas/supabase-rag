@@ -2250,7 +2250,7 @@ async function askAI(userId, countryCode, question, options = {}) {
 
         // 5. FALLBACK - solo Excel: sin flow recuperado no se llama al LLM.
         // Esto evita que el modelo invente telefonos, correos, sedes o links.
-        const noCtxResponse = strings(countryCode).fallbackNoExcel(orgName, await buildTopicsMenu(countryCode));
+        const noCtxResponse = strings(countryCode).fallbackNoExcel(orgName);
 
         return finishTrace(noCtxResponse, { search_type: "no_excel_match", route: "fallback_no_excel" });
       })

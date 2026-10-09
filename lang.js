@@ -132,9 +132,9 @@ const COUNTRY_STRINGS = {
     smallTalk: (org, topics) => topics
       ? `¡Hola! Soy el agente Perú Multipaís de ${org}. Puedo orientarte sobre estos temas:\n\n${topics}\n\nCuéntame tu consulta con tus propias palabras.`
       : `¡Hola! Soy el agente Perú Multipaís de ${org}. ¿En qué puedo orientarte hoy?`,
-    fallbackNoExcel: (org, topics) => topics
-      ? `Gracias por contarme. No tengo una orientación precisa sobre eso por aquí.\n\nPuedo ayudarte con estos temas:\n\n${topics}\n\nSi tu caso es otro, te recomiendo comunicarte por los canales oficiales de ${org}.`
-      : STRINGS.es.fallbackNoExcel(org),
+    // Sin lista de temas: los temas se muestran solo en el saludo y la
+    // bienvenida, no cada vez que una pregunta no encuentra respuesta.
+    fallbackNoExcel: (org) => `Gracias por contarme. No tengo una orientación precisa sobre eso por aquí. Te recomiendo comunicarte por los canales oficiales de ${org} para que puedan ayudarte con tu caso.`,
   },
 };
 
