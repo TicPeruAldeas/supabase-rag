@@ -61,7 +61,9 @@ test("la directiva de formato solo se anexa a XT", () => {
 
 test("XT se presenta como agente Perú Multipaís, sin hablar de programas y servicios", () => {
   const card = strings("XT").consentText("Ana");
-  assert.match(card, /^Hola Ana, soy el agente Perú Multipaís de Aldeas Infantiles SOS\./);
+  assert.match(card, /^¡Hola, Ana! 👋 Bienvenido\/a 😊\. Soy el agente Perú Multipaís de Aldeas Infantiles SOS\./);
+  assert.match(card, /sin importar tu situación migratoria/);
+  assert.match(strings("XT").consentText(null), /^¡Hola! 👋 Bienvenido\/a/);
   assert.doesNotMatch(card, /programas y servicios/);
 });
 
