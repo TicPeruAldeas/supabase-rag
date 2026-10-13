@@ -122,21 +122,27 @@ const STRINGS = {
 // Textos propios de un país que reemplazan a los de su idioma. Las funciones
 // que listan temas reciben `topics` (líneas "• Tema" o ""); los textos base
 // ignoran ese argumento, por eso se puede pasar siempre.
+const XT_TOPICS = [
+  "• *Documentación:* papeles, renovación, situación migratoria",
+  "• *Protección de niñas y niños:* violencia, denuncias, a quién acudir",
+  "• *Tus derechos:* salud, educación, trabajo",
+  "• *La organización:* qué hacemos y cómo pedir apoyo",
+].join("\n");
+const XT_TOPICS_CLOSING = "Escríbelo con tus propias palabras, sin preocuparte por cómo lo digas 💙";
+
 const COUNTRY_STRINGS = {
   XT: {
     consentText: (userName) => {
       const saludo = userName ? `¡Hola, ${userName}! 👋` : "¡Hola! 👋";
       return `${saludo} Bienvenido/a 😊. Soy el agente Perú Multipaís de Aldeas Infantiles SOS. Estoy aquí para orientarte sobre documentos, tus derechos y la protección de tus hijos, sin importar tu situación migratoria. *Todo lo que me cuentes es confidencial.*\n\nPresiona "Continuar" y empecemos 👇`;
     },
-    welcome: (userName, topics) => {
-      const saludo = userName ? `¡Gracias, ${userName}!` : "¡Gracias!";
-      return topics
-        ? `${saludo} Puedo orientarte sobre estos temas:\n\n${topics}\n\nCuéntame tu consulta con tus propias palabras.`
-        : `${saludo} Cuéntame tu consulta con tus propias palabras y te oriento.`;
+    // Temas escritos a mano (con ejemplos), no tomados de las categorías del
+    // Excel: si se agrega una categoría nueva, hay que añadirla en XT_TOPICS.
+    welcome: (userName) => {
+      const saludo = userName ? `¡Gracias, ${userName}! 😊` : "¡Gracias! 😊";
+      return `${saludo} Cuéntame qué necesitas. Puedo orientarte sobre:\n\n${XT_TOPICS}\n\n${XT_TOPICS_CLOSING}`;
     },
-    smallTalk: (org, topics) => topics
-      ? `¡Hola! Soy el agente Perú Multipaís de ${org}. Puedo orientarte sobre estos temas:\n\n${topics}\n\nCuéntame tu consulta con tus propias palabras.`
-      : `¡Hola! Soy el agente Perú Multipaís de ${org}. ¿En qué puedo orientarte hoy?`,
+    smallTalk: () => `¡Hola! 😊 Soy el agente Perú Multipaís de Aldeas Infantiles SOS. Cuéntame qué necesitas. Puedo orientarte sobre:\n\n${XT_TOPICS}\n\n${XT_TOPICS_CLOSING}`,
     // Sin lista de temas: los temas se muestran solo en el saludo y la
     // bienvenida, no cada vez que una pregunta no encuentra respuesta.
     fallbackNoExcel: (org) => `Gracias por contarme. No tengo una orientación precisa sobre eso por aquí. Te recomiendo comunicarte por los canales oficiales de ${org} para que puedan ayudarte con tu caso.`,

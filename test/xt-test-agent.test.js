@@ -67,12 +67,13 @@ test("XT se presenta como agente Perú Multipaís, sin hablar de programas y ser
   assert.doesNotMatch(card, /programas y servicios/);
 });
 
-test("la bienvenida y el saludo de XT listan los temas recibidos", () => {
-  const topics = "• Documentación\n• Acceso a derechos";
-  assert.match(strings("XT").welcome("Ana", topics), /estos temas:\n\n• Documentación\n• Acceso a derechos\n\n/);
-  assert.match(strings("XT").smallTalk("Aldeas Infantiles SOS Perú", topics), /• Acceso a derechos/);
-  // Sin temas cargados, igual saluda sin dejar la lista vacía.
-  assert.doesNotMatch(strings("XT").welcome("Ana", ""), /estos temas/);
+test("la bienvenida y el saludo de XT muestran los temas con ejemplos", () => {
+  const welcome = strings("XT").welcome("Ana");
+  assert.match(welcome, /^¡Gracias, Ana! 😊 Cuéntame qué necesitas\. Puedo orientarte sobre:\n\n• \*Documentación:\* papeles/);
+  assert.match(welcome, /• \*La organización:\* qué hacemos y cómo pedir apoyo\n\nEscríbelo con tus propias palabras, sin preocuparte por cómo lo digas 💙$/);
+  assert.doesNotMatch(welcome, /servicios/);
+  assert.match(strings("XT").welcome(null), /^¡Gracias! 😊/);
+  assert.match(strings("XT").smallTalk("Aldeas Infantiles SOS Perú"), /^¡Hola! 😊 Soy el agente Perú Multipaís de Aldeas Infantiles SOS\..*\n• \*Tus derechos:\* salud, educación, trabajo\n/s);
 });
 
 test("PE, CO y BR conservan sus textos originales aunque se les pase un menú", () => {
