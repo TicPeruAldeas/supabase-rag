@@ -126,7 +126,7 @@ const COUNTRY_STRINGS = {
   XT: {
     consentText: (userName) => {
       const saludo = userName ? `¡Hola, ${userName}! 👋` : "¡Hola! 👋";
-      return `${saludo} Bienvenido/a 😊. Soy el agente Perú Multipaís de Aldeas Infantiles SOS. Estoy aquí para orientarte sobre documentos, tus derechos y la protección de tus hijos, sin importar tu situación migratoria. Todo lo que me cuentes es confidencial.\n\nPresiona "Continuar" y empecemos 👇`;
+      return `${saludo} Bienvenido/a 😊. Soy el agente Perú Multipaís de Aldeas Infantiles SOS. Estoy aquí para orientarte sobre documentos, tus derechos y la protección de tus hijos, sin importar tu situación migratoria. *Todo lo que me cuentes es confidencial.*\n\nPresiona "Continuar" y empecemos 👇`;
     },
     welcome: (userName, topics) => {
       const saludo = userName ? `¡Gracias, ${userName}!` : "¡Gracias!";
