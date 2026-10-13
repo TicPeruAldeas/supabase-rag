@@ -71,6 +71,9 @@ const STRINGS = {
     allStepsIntro: (total) => `Claro, este es el resumen de los ${total} pasos:`,
     allStepsOutro: () => `¿Quieres más detalle de alguno? Dime el número del paso.`,
     contactFallback: (org) => `Gracias por contarme. En este momento no cuento con un contacto especifico para orientarte por aqui. Te recomiendo comunicarte por los canales oficiales de ${org} para que puedan evaluar tu caso.`,
+    // Pidió un contacto que no figura en la base (países con contactos estrictos).
+    contactNotFound: (org) => `No tengo ese contacto por aquí. Te recomiendo comunicarte por los canales oficiales de ${org}.`,
+    contactDatosOnly: (datos) => `Estos son los datos de contacto que tengo sobre este tema:\n\n${datos}`,
     clarificationDefault: (org) => `¿En qué área específica puedo orientarte sobre los servicios de ${org}?`,
     locationFollowupDefault: (loc) => `Gracias por decirme que estas en ${loc}. Tu caso requiere atencion prioritaria. Es importante que puedas acercarte o contactar lo antes posible con servicios de apoyo en tu localidad para recibir orientacion, proteccion y acompanamiento.`,
     // server.js
@@ -97,6 +100,8 @@ const STRINGS = {
     allStepsIntro: (total) => `Claro, este é o resumo dos ${total} passos:`,
     allStepsOutro: () => `Quer mais detalhes de algum? Me diga o número do passo.`,
     contactFallback: (org) => `Obrigado por compartilhar. Neste momento não tenho um contato específico para te orientar por aqui. Recomendo entrar em contato pelos canais oficiais da ${org} para que possam avaliar o seu caso.`,
+    contactNotFound: (org) => `Não tenho esse contato por aqui. Recomendo entrar em contato pelos canais oficiais da ${org}.`,
+    contactDatosOnly: (datos) => `Estes são os dados de contato que tenho sobre este assunto:\n\n${datos}`,
     clarificationDefault: (org) => `Em qual área específica posso te orientar sobre os serviços da ${org}?`,
     locationFollowupDefault: (loc) => `Obrigado por me dizer que você está em ${loc}. O seu caso precisa de atenção prioritária. É importante procurar ou entrar em contato o quanto antes com serviços de apoio na sua região para receber orientação, proteção e acompanhamento.`,
     // server.js

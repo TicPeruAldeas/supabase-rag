@@ -486,11 +486,20 @@ function truncateAtSentence(text, maxChars) {
 // con la columna "Datos" fusionada eso era un muro de texto que terminaba con la
 // etiqueta interna "DATOS DE CONTACTO:". Se entrega el inicio de la información
 // principal (cortado en una frase) y los datos de contacto tal cual la fuente.
-function guardGroundedContactInfo(response, sourceText, orgName, countryCode, offender = null) {
+// contactOnly (pedido de contacto en un país con contactos estrictos): nunca se
+// muestra la información principal — solo los Datos del tema, o "no tengo ese
+// contacto" si la fila vino de una coincidencia por palabra (keywordMatch) o no
+// tiene Datos. Así un pedido de teléfono no recibe el inicio de otro tema.
+function guardGroundedContactInfo(response, sourceText, orgName, countryCode, offender = null, { contactOnly = false, keywordMatch = false } = {}) {
   const found = offender || findUnsupportedContact(response, sourceText);
   if (!found) return response;
   console.warn(`⚠️ Respuesta con contacto no presente en Excel (${found.kind}: "${found.token}"); usando fallback seguro.`);
   const { respuesta, datos } = splitDatos(sourceText);
+  if (contactOnly) {
+    return datos && !keywordMatch
+      ? strings(countryCode).contactDatosOnly(datos)
+      : strings(countryCode).contactNotFound(orgName);
+  }
   const brief = truncateAtSentence(respuesta, 600);
   return [brief, datos ? `Datos de contacto: ${datos}` : ""].filter(Boolean).join("\n\n").trim()
     || strings(countryCode).contactFallback(orgName);
@@ -1035,11 +1044,47 @@ function contactSearchTokens(text) {
     .slice(0, 4);
 }
 
+// ── Contactos estrictos (por país) ────────────────────────────
+// Si alguien pide un contacto que NO está en la base, el modo estricto evita
+// caer en una fila ajena por una palabra suelta (p. ej. "salud" en los Datos de
+// la fila de abuso sexual) y responde "No tengo ese contacto". Se activa primero
+// en el país de PRUEBA (XT); para extenderlo, añadir aquí PE, CO, BR.
+const STRICT_CONTACT_COUNTRIES = new Set(["XT"]);
+
+function usesStrictContact(countryCode) {
+  return STRICT_CONTACT_COUNTRIES.has(String(countryCode || "").toUpperCase());
+}
+
+// ¿Aparecen TODAS las palabras clave en los Datos? (sin tildes ni mayúsculas)
+function datosContainAllTokens(answer, tokens) {
+  const datos = stripAccents(splitDatos(answer).datos).toLowerCase();
+  return datos !== "" && tokens.every((t) => datos.includes(stripAccents(t).toLowerCase()));
+}
+
 // Búsqueda por palabra clave DENTRO de la sección de Datos ("buscar principalmente
 // en la columna Datos"). Se usa cuando el usuario pide un contacto y el embedding
 // no encontró flow. El patrón `%DATOS DE CONTACTO:%token%` exige que el token
 // aparezca DESPUÉS del encabezado, es decir, en los Datos y no en la Respuesta.
+// En modo estricto la fila debe contener en sus Datos TODAS las palabras clave
+// ("ministerio" + "salud"), no solo una.
 async function findFlowByDatosKeyword(countryCode, text) {
+  if (usesStrictContact(countryCode)) {
+    const tokens = contactSearchTokens(text);
+    if (tokens.length === 0) return null;
+    const { data, error } = await supabase
+      .from("knowledge_flows")
+      .select("flow_id, country_code, flow_type, question, answer")
+      .eq("country_code", countryCode)
+      .ilike("answer", `%${DATOS_HEADER}%${tokens[0]}%`)
+      .limit(25);
+    if (error) {
+      console.error(`⚠️  findFlowByDatosKeyword [${countryCode}/${tokens[0]}]:`, error.message);
+      return null;
+    }
+    const row = (data || []).find((r) => datosContainAllTokens(r.answer, tokens));
+    return row ? { ...row, similarity: null, datos_keyword: tokens.join(" + ") } : null;
+  }
+
   for (const token of contactSearchTokens(text)) {
     const { data, error } = await supabase
       .from("knowledge_flows")
@@ -1522,7 +1567,10 @@ ${flow.answer}`,
       rawResponse = msg.content[0]?.text || flow.answer;
       offender = findUnsupportedContact(rawResponse, flow.answer);
     }
-    const resp = guardGroundedContactInfo(rawResponse, flow.answer, orgName, countryCode, offender);
+    const resp = guardGroundedContactInfo(rawResponse, flow.answer, orgName, countryCode, offender, {
+      contactOnly: contactRequest && usesStrictContact(countryCode),
+      keywordMatch: Boolean(flow.datos_keyword),
+    });
     obs.update({
       output: resp,
       model: CLAUDE_MODEL,
@@ -2250,6 +2298,10 @@ async function askAI(userId, countryCode, question, options = {}) {
 
         // 5. FALLBACK - solo Excel: sin flow recuperado no se llama al LLM.
         // Esto evita que el modelo invente telefonos, correos, sedes o links.
+        // Pidió un contacto que no está en la base (contactos estrictos): se dice así.
+        if (contactRequest && usesStrictContact(countryCode)) {
+          return finishTrace(strings(countryCode).contactNotFound(orgName), { search_type: "contact_not_found", route: "contact_not_found" });
+        }
         const noCtxResponse = strings(countryCode).fallbackNoExcel(orgName);
 
         return finishTrace(noCtxResponse, { search_type: "no_excel_match", route: "fallback_no_excel" });
@@ -2263,6 +2315,9 @@ module.exports = {
   // Menú de temas para la bienvenida tras el consentimiento (server.js).
   buildTopicsMenu,
   // Helpers puros expuestos para pruebas unitarias (sin efectos de red).
+  usesStrictContact,
+  datosContainAllTokens,
+  guardGroundedContactInfo,
   hasUnsupportedContactInfo,
   sanitizeUserFacingResponse,
   isContinuationMessage,

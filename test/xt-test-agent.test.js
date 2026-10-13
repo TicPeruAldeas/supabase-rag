@@ -1,9 +1,51 @@
 // Agente de PRUEBA (XT): formato de viñetas, textos propios y menú de temas.
 // Verifica también que PE, CO y BR quedan exactamente como estaban.
+process.env.SUPABASE_URL = process.env.SUPABASE_URL || "http://localhost";
+process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "dummy";
+process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "dummy";
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "dummy";
+
 const { test } = require("node:test");
 const assert = require("node:assert");
 
 const { usesRichFormat, langDirective, strings } = require("../lang");
+const { usesStrictContact, datosContainAllTokens, guardGroundedContactInfo } = require("../rag-service");
+const { mergeDatos } = require("../datos-text");
+
+// Fila de abuso sexual: sus Datos mencionan "salud", pero no un ministerio.
+const ABUSO = mergeDatos(
+  "Lo primero: lo que sientes ahora es difícil. Si el hecho es reciente, no bañes a tu hija.",
+  "Línea de atención de violencia: 000 · Establecimiento de salud de referencia: Av. Ejemplo 654, (00) 000-0009"
+);
+const ORG = "Aldeas Infantiles SOS Perú";
+const BLOQUEADO = { kind: "institution", token: "Ministerio" };
+
+test("contactos estrictos: activos solo en XT por ahora", () => {
+  assert.strictEqual(usesStrictContact("XT"), true);
+  for (const cc of ["PE", "CO", "BR"]) assert.strictEqual(usesStrictContact(cc), false);
+});
+
+test("la búsqueda estricta exige TODAS las palabras en los Datos", () => {
+  assert.strictEqual(datosContainAllTokens(ABUSO, ["ministerio", "salud"]), false); // caso 4
+  assert.strictEqual(datosContainAllTokens(ABUSO, ["salud"]), true);
+  assert.strictEqual(datosContainAllTokens(ABUSO, ["violencia", "línea"]), true); // sin importar tildes
+  assert.strictEqual(datosContainAllTokens("Respuesta sin datos", ["salud"]), false);
+});
+
+test("pedido de contacto bloqueado en XT: nunca muestra la respuesta principal", () => {
+  const porPalabra = guardGroundedContactInfo("WhatsApp del Ministerio…", ABUSO, ORG, "XT", BLOQUEADO, { contactOnly: true, keywordMatch: true });
+  assert.strictEqual(porPalabra, strings("XT").contactNotFound(ORG));
+
+  const porTema = guardGroundedContactInfo("WhatsApp del Ministerio…", ABUSO, ORG, "XT", BLOQUEADO, { contactOnly: true });
+  assert.match(porTema, /^Estos son los datos de contacto que tengo sobre este tema:/);
+  assert.doesNotMatch(porTema, /no bañes/);
+});
+
+test("sin contactOnly (PE, CO, BR) el respaldo del guardarraíl no cambia", () => {
+  const r = guardGroundedContactInfo("WhatsApp del Ministerio…", ABUSO, ORG, "PE", BLOQUEADO);
+  assert.match(r, /no bañes/);
+  assert.match(r, /Datos de contacto: Línea de atención/);
+});
 
 test("solo XT usa el formato de viñetas", () => {
   assert.strictEqual(usesRichFormat("XT"), true);
