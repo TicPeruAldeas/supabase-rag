@@ -490,19 +490,19 @@ function truncateAtSentence(text, maxChars) {
 // muestra la información principal — solo los Datos del tema, o "no tengo ese
 // contacto" si la fila vino de una coincidencia por palabra (keywordMatch) o no
 // tiene Datos. Así un pedido de teléfono no recibe el inicio de otro tema.
-function guardGroundedContactInfo(response, sourceText, orgName, countryCode, offender = null, { contactOnly = false, keywordMatch = false } = {}) {
+function guardGroundedContactInfo(response, sourceText, orgName, countryCode, offender = null, { contactOnly = false, keywordMatch = false, userText = null } = {}) {
   const found = offender || findUnsupportedContact(response, sourceText);
   if (!found) return response;
   console.warn(`⚠️ Respuesta con contacto no presente en Excel (${found.kind}: "${found.token}"); usando fallback seguro.`);
   const { respuesta, datos } = splitDatos(sourceText);
   if (contactOnly) {
     return datos && !keywordMatch
-      ? strings(countryCode).contactDatosOnly(datos)
-      : strings(countryCode).contactNotFound(orgName);
+      ? strings(countryCode, userText).contactDatosOnly(datos)
+      : strings(countryCode, userText).contactNotFound(orgName);
   }
   const brief = truncateAtSentence(respuesta, 600);
   return [brief, datos ? `Datos de contacto: ${datos}` : ""].filter(Boolean).join("\n\n").trim()
-    || strings(countryCode).contactFallback(orgName);
+    || strings(countryCode, userText).contactFallback(orgName);
 }
 
 function sanitizeUserFacingResponse(response) {
@@ -1224,30 +1224,30 @@ function firstSentence(text, max = 110) {
   return s;
 }
 
-function formatAllStepsFallback(allSteps, countryCode) {
+function formatAllStepsFallback(allSteps, countryCode, userText = null) {
   const steps = (allSteps || []).map(s => ({
     number: s.number ?? s.step_number,
     summary: s.summary ?? s.step_summary,
   }));
   const lines = steps.map(s => `${s.number}. ${firstSentence(s.summary)}`);
-  const t = strings(countryCode);
+  const t = strings(countryCode, userText);
   return `${t.allStepsIntro(steps.length)}\n\n${lines.join("\n")}\n\n${t.allStepsOutro()}`;
 }
 
 // El modelo condensa cada paso a UNA línea corta (numerada, en orden). Si la
 // salida no trae todos los números o falla, se usa el fallback determinista.
-async function presentAllStepsWithLLM(allSteps, { orgName, countryCode, datos }) {
+async function presentAllStepsWithLLM(allSteps, { orgName, countryCode, datos, userText = null }) {
   const steps = (allSteps || []).map(s => ({
     number: s.number ?? s.step_number,
     summary: s.summary ?? s.step_summary,
   }));
-  const fallback = formatAllStepsFallback(steps, countryCode);
+  const fallback = formatAllStepsFallback(steps, countryCode, userText);
   if (!steps.length) return fallback;
 
   return startActiveObservation("claude-all-steps-summary", async (obs) => {
     obs.update({ input: { total: steps.length } });
     const source = steps.map(s => `[${s.number}] ${s.summary}`).join("\n");
-    const t = strings(countryCode);
+    const t = strings(countryCode, userText);
     const systemText = `Organización: ${orgName}. País: ${countryCode}.
 El usuario pidió ver TODOS los pasos del proceso de una vez. Entrega una lista enumerada, ordenada y RESUMIDA.
 
@@ -1335,7 +1335,7 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
 
     if (!currentStep) {
       await updateStep(state.id, state.current_step, "completed");
-      return { response: strings(countryCode).stepDone(), metadata: { flow_type: "paso_a_paso" } };
+      return { response: strings(countryCode, question).stepDone(), metadata: { flow_type: "paso_a_paso" } };
     }
 
     // Resumen de todos los pasos + detalle completo solo del actual y el siguiente
@@ -1346,7 +1346,7 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
     // Navegación explícita: "todos los pasos" → lista resumida (el flujo sigue
     // activo para que pueda pedir el detalle de uno); "paso N" → ese paso.
     if (isAllStepsRequest(question)) {
-      const response = await presentAllStepsWithLLM(allSteps, { orgName, countryCode, datos });
+      const response = await presentAllStepsWithLLM(allSteps, { orgName, countryCode, datos, userText: question });
       await updateStep(state.id, state.current_step, "active");
       return {
         response,
@@ -1445,7 +1445,7 @@ REGLAS para el campo "respuesta":
     // "todos" decidido por el modelo → lista resumida generada en código (nunca
     // el JSON del modelo, que con muchos pasos se corta).
     if (accion === "todos") {
-      const overview = await presentAllStepsWithLLM(allSteps, { orgName, countryCode, datos });
+      const overview = await presentAllStepsWithLLM(allSteps, { orgName, countryCode, datos, userText: question });
       await updateStep(state.id, state.current_step, "active");
       return {
         response: overview,
@@ -1570,6 +1570,7 @@ ${flow.answer}`,
     const resp = guardGroundedContactInfo(rawResponse, flow.answer, orgName, countryCode, offender, {
       contactOnly: contactRequest && usesStrictContact(countryCode),
       keywordMatch: Boolean(flow.datos_keyword),
+      userText: question,
     });
     obs.update({
       output: resp,
@@ -1629,8 +1630,8 @@ ${flow.answer}`,
     });
 
     const rawResponse = msg.content[0]?.text
-      || strings(countryCode).locationFollowupDefault(location);
-    const resp = guardGroundedContactInfo(rawResponse, `${flow.answer}\n${location}`, orgName, countryCode);
+      || strings(countryCode, question).locationFollowupDefault(location);
+    const resp = guardGroundedContactInfo(rawResponse, `${flow.answer}\n${location}`, orgName, countryCode, null, { userText: question });
 
     obs.update({
       output: resp,
@@ -1668,7 +1669,7 @@ async function generateClarification(question, history, orgName, countryCode) {
       messages,
     });
     const resp = msg.content[0]?.text
-      || strings(countryCode).clarificationDefault(orgName);
+      || strings(countryCode, question).clarificationDefault(orgName);
     obs.update({
       output: resp,
       model: CLAUDE_MODEL,
@@ -1966,7 +1967,7 @@ async function askAI(userId, countryCode, question, options = {}) {
             // Saludo a media conversación: NO cancelar ni reiniciar el flujo.
             // Devolvemos un saludo breve que mantiene el contexto del paso actual.
             console.log(`👋 Saludo dentro de flujo activo — sin cancelar: ${activeState.flow_id} paso ${activeState.current_step}`);
-            const response = strings(countryCode).smallTalkInFlow();
+            const response = strings(countryCode, question).smallTalkInFlow();
             return finishTrace(response, {
               search_type: "small_talk_in_flow",
               route: "active_flow_smalltalk",
@@ -1978,7 +1979,7 @@ async function askAI(userId, countryCode, question, options = {}) {
             // Rechazo explícito ("no", "no gracias"...) → cerrar el flujo sin avanzar.
             console.log(`🚫 Rechazo dentro de flujo — finalizando sin avanzar: ${activeState.flow_id} paso ${activeState.current_step}`);
             await updateStep(activeState.id, activeState.current_step, "completed");
-            const response = strings(countryCode).declineInFlow();
+            const response = strings(countryCode, question).declineInFlow();
             return finishTrace(response, {
               search_type: "decline",
               route: "active_flow_decline",
@@ -2020,7 +2021,7 @@ async function askAI(userId, countryCode, question, options = {}) {
             // Despedida/agradecimiento → cerrar el flujo con gracia (sin fallback frío).
             console.log(`🙏 Cierre dentro de flujo activo — finalizando: ${activeState.flow_id} paso ${activeState.current_step}`);
             await updateStep(activeState.id, activeState.current_step, "completed");
-            const response = strings(countryCode).closingInFlow();
+            const response = strings(countryCode, question).closingInFlow();
             return finishTrace(response, {
               search_type: "closing",
               route: "active_flow_closing",
@@ -2075,13 +2076,13 @@ async function askAI(userId, countryCode, question, options = {}) {
 
         // 1. SMALL TALK — solo si NO hay flujo activo
         if (SMALL_TALK_REGEX.test(question.trim())) {
-          const response = strings(countryCode).smallTalk(orgName, await buildTopicsMenu(countryCode));
+          const response = strings(countryCode, question).smallTalk(orgName, await buildTopicsMenu(countryCode));
           return finishTrace(response, { search_type: "small_talk", route: "small_talk" });
         }
 
         // 2. CIERRE / AGRADECIMIENTO — despedida cálida en vez del fallback frío.
         if (isClosingMessage(question)) {
-          const response = strings(countryCode).closing();
+          const response = strings(countryCode, question).closing();
           return finishTrace(response, { search_type: "closing", route: "closing" });
         }
 
@@ -2100,13 +2101,13 @@ async function askAI(userId, countryCode, question, options = {}) {
           isFollowup = analysis.intent === "followup" && !analysis.topic_changed;
 
           if (analysis.intent === "closing") {
-            return finishTrace(strings(countryCode).closing(), { search_type: "closing", route: "closing_nlu" });
+            return finishTrace(strings(countryCode, question).closing(), { search_type: "closing", route: "closing_nlu" });
           }
           if (analysis.intent === "greeting") {
-            return finishTrace(strings(countryCode).smallTalk(orgName, await buildTopicsMenu(countryCode)), { search_type: "small_talk", route: "small_talk_nlu" });
+            return finishTrace(strings(countryCode, question).smallTalk(orgName, await buildTopicsMenu(countryCode)), { search_type: "small_talk", route: "small_talk_nlu" });
           }
           if (analysis.intent === "decline") {
-            return finishTrace(strings(countryCode).declineInFlow(), { search_type: "decline", route: "decline_nlu" });
+            return finishTrace(strings(countryCode, question).declineInFlow(), { search_type: "decline", route: "decline_nlu" });
           }
           if (analysis.intent === "source_request") {
             const url = await getLastCited();
@@ -2300,9 +2301,9 @@ async function askAI(userId, countryCode, question, options = {}) {
         // Esto evita que el modelo invente telefonos, correos, sedes o links.
         // Pidió un contacto que no está en la base (contactos estrictos): se dice así.
         if (contactRequest && usesStrictContact(countryCode)) {
-          return finishTrace(strings(countryCode).contactNotFound(orgName), { search_type: "contact_not_found", route: "contact_not_found" });
+          return finishTrace(strings(countryCode, question).contactNotFound(orgName), { search_type: "contact_not_found", route: "contact_not_found" });
         }
-        const noCtxResponse = strings(countryCode).fallbackNoExcel(orgName);
+        const noCtxResponse = strings(countryCode, question).fallbackNoExcel(orgName);
 
         return finishTrace(noCtxResponse, { search_type: "no_excel_match", route: "fallback_no_excel" });
       })

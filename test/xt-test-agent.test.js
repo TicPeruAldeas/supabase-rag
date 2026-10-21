@@ -8,7 +8,7 @@ process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "dummy";
 const { test } = require("node:test");
 const assert = require("node:assert");
 
-const { usesRichFormat, usesAutoLanguage, langDirective, strings } = require("../lang");
+const { usesRichFormat, usesAutoLanguage, looksPortuguese, langDirective, strings } = require("../lang");
 const { usesStrictContact, datosContainAllTokens, guardGroundedContactInfo } = require("../rag-service");
 const { mergeDatos } = require("../datos-text");
 
@@ -57,6 +57,36 @@ test("la directiva de formato solo se anexa a XT", () => {
   assert.strictEqual(langDirective("PE"), "");
   assert.strictEqual(langDirective("CO"), "");
   assert.doesNotMatch(langDirective("BR"), /FORMATO DE RESPUESTA/);
+});
+
+test("detecta portugués sin confundirlo con español", () => {
+  for (const pt of ["Olá", "oi", "Obrigado!", "Qual é o telefone?", "Meu filho não tem documentos", "Como faço para regularizar?", "bom dia"]) {
+    assert.strictEqual(looksPortuguese(pt), true, pt);
+  }
+  for (const es of ["Hola", "Gracias", "¿Cuál es el teléfono?", "Mi hijo no tiene documentos", "¿Cómo hago para arreglar mis papeles?", "buenos días", "", null]) {
+    assert.strictEqual(looksPortuguese(es), false, String(es));
+  }
+});
+
+test("XT usa los textos fijos en portugués cuando le escriben en portugués", () => {
+  assert.match(strings("XT", "Olá").smallTalk("Org"), /^Olá! 😊 Sou o agente Peru Multipaís/);
+  assert.match(strings("XT", "Olá").welcome("Ana"), /^Obrigado\/a, Ana! 😊 Me conte o que você precisa/);
+  assert.match(strings("XT", "Olá").consentText("Ana"), /^Olá, Ana! 👋 Seja bem-vindo\/a/);
+  assert.match(strings("XT", "Qual é o WhatsApp?").contactNotFound("Org"), /^Não tenho esse contato por aqui/);
+  assert.match(strings("XT", "Não sei").fallbackNoExcel("Org"), /^Obrigado por compartilhar/);
+  // En español (o sin texto) XT mantiene sus textos de siempre.
+  assert.match(strings("XT", "Hola").smallTalk("Org"), /^¡Hola! 😊 Soy el agente Perú Multipaís/);
+  assert.match(strings("XT").welcome("Ana"), /^¡Gracias, Ana! 😊/);
+});
+
+test("PE, CO y BR ignoran el texto del mensaje al elegir los textos fijos", () => {
+  for (const cc of ["PE", "CO", "BR"]) {
+    assert.deepStrictEqual(
+      Object.keys(strings(cc, "Olá, obrigado")).sort(),
+      Object.keys(strings(cc)).sort()
+    );
+    assert.strictEqual(strings(cc, "Olá, obrigado").welcome("Ana"), strings(cc).welcome("Ana"));
+  }
 });
 
 test("solo XT responde en el idioma de cada mensaje; BR sigue fijo en portugués", () => {

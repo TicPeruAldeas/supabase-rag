@@ -229,8 +229,31 @@ function isConsentAcceptance(buttonId, text) {
   return buttonId === CONSENT_BUTTON_ID || CONSENT_TEXT_REGEX.test(text || "");
 }
 
-function buildConsentText(userName, countryCode) {
-  return strings(countryCode).consentText(userName);
+// userText: mensaje de la persona. En el agente de prueba (XT) decide si los
+// textos fijos salen en portugués; los demás países lo ignoran (ver lang.js).
+function buildConsentText(userName, countryCode, userText) {
+  return strings(countryCode, userText).consentText(userName);
+}
+
+// Último mensaje con el que se envió la tarjeta de consentimiento, por
+// país:usuario. Al pulsar "Continuar" no llega texto, así que la bienvenida usa
+// este mensaje para mantener el idioma. Solo en memoria: tras un reinicio la
+// bienvenida sale en el idioma por defecto del país, sin otro efecto.
+const CONSENT_TEXT_TTL_MS = 24 * 60 * 60 * 1000;
+const consentPromptText = new Map(); // `${país}:${usuario}` → { text, ts }
+
+function rememberConsentText(countryCode, userId, text) {
+  if (!text) return;
+  const now = Date.now();
+  if (consentPromptText.size > 5000) {
+    for (const [k, v] of consentPromptText) if (now - v.ts > CONSENT_TEXT_TTL_MS) consentPromptText.delete(k);
+  }
+  consentPromptText.set(`${countryCode}:${userId}`, { text, ts: now });
+}
+
+function recallConsentText(countryCode, userId) {
+  const hit = consentPromptText.get(`${countryCode}:${userId}`);
+  return hit && Date.now() - hit.ts <= CONSENT_TEXT_TTL_MS ? hit.text : "";
 }
 
 async function hasRecentConsent(userId, countryCode) {
@@ -255,11 +278,11 @@ async function hasRecentConsent(userId, countryCode) {
   return (data || []).length > 0;
 }
 
-async function sendConsentCard(to, userName, phoneNumberId, token, countryCode) {
+async function sendConsentCard(to, userName, phoneNumberId, token, countryCode, userText) {
   await sendWhatsAppButton(
     to,
-    buildConsentText(userName, countryCode),
-    [{ id: CONSENT_BUTTON_ID, title: strings(countryCode).consentButtonTitle() }],
+    buildConsentText(userName, countryCode, userText),
+    [{ id: CONSENT_BUTTON_ID, title: strings(countryCode, userText).consentButtonTitle() }],
     phoneNumberId,
     token
   );
@@ -402,7 +425,7 @@ async function handleIncomingMessage({ from, text, countryCode, phoneNumberId, t
     try {
       await sendWhatsAppMessage(
         from,
-        strings(countryCode).technicalError(),
+        strings(countryCode, text).technicalError(),
         phoneNumberId,
         token
       );
@@ -436,7 +459,10 @@ async function handleConsentGate({ from, text, buttonId, userName, countryCode, 
         console.error("⚠️  buildTopicsMenu:", err.message);
         return "";
       });
-      const welcome = strings(countryCode).welcome(userName, topics);
+      // Idioma de la bienvenida: el del mensaje de aceptación si lo escribió, o
+      // el del mensaje que originó la tarjeta (al pulsar el botón no hay texto).
+      const langText = text || recallConsentText(countryCode, from);
+      const welcome = strings(countryCode, langText).welcome(userName, topics);
       await sendWhatsAppMessage(from, welcome, phoneNumberId, token);
       await saveConversationTurn({
         userId: from, countryCode, role: "assistant", message: welcome, source: "whatsapp",
@@ -454,8 +480,9 @@ async function handleConsentGate({ from, text, buttonId, userName, countryCode, 
           metadata: { event: "incoming_whatsapp_message", wa_message_id: messageId, phone_number_id: incomingPhoneNumberId },
         }).catch((err) => console.error("Error guardando entrante:", err.message));
       }
-      const card = buildConsentText(userName, countryCode);
-      await sendConsentCard(from, userName, phoneNumberId, token, countryCode);
+      const card = buildConsentText(userName, countryCode, inbound);
+      await sendConsentCard(from, userName, phoneNumberId, token, countryCode, inbound);
+      rememberConsentText(countryCode, from, inbound);
       await saveConversationTurn({
         userId: from, countryCode, role: "assistant", message: card, source: "whatsapp",
         metadata: { event: "consent_prompt", phone_number_id: incomingPhoneNumberId },

@@ -164,9 +164,54 @@ const COUNTRY_STRINGS = {
   },
 };
 
-function strings(countryCode) {
+// ── Agente de PRUEBA (XT) en portugués ────────────────────────
+// Cuando la persona escribe en portugués, XT usa estos textos fijos (sobre los
+// textos base "pt"). El nombre de la organización se mantiene en español
+// ("Aldeas Infantiles SOS"), igual que el resto de nombres propios.
+const XT_TOPICS_PT = [
+  "• *Documentação:* papéis, renovação, situação migratória",
+  "• *Proteção de meninas e meninos:* violência, denúncias, a quem recorrer",
+  "• *Seus direitos:* saúde, educação, trabalho",
+  "• *A organização:* o que fazemos e como pedir apoio",
+].join("\n");
+const XT_TOPICS_CLOSING_PT = "Escreva com suas próprias palavras, sem se preocupar com a forma de dizer 💙";
+
+const COUNTRY_STRINGS_PT = {
+  XT: {
+    consentText: (userName) => {
+      const saudacao = userName ? `Olá, ${userName}! 👋` : "Olá! 👋";
+      return `${saudacao} Seja bem-vindo/a 😊. Sou o agente Peru Multipaís da Aldeas Infantiles SOS. Estou aqui para te orientar sobre documentos, seus direitos e a proteção dos seus filhos, independentemente da sua situação migratória. *Tudo o que você me contar é confidencial.*\n\nToque em "Continuar" e vamos começar 👇`;
+    },
+    welcome: (userName) => {
+      const saudacao = userName ? `Obrigado/a, ${userName}! 😊` : "Obrigado/a! 😊";
+      return `${saudacao} Me conte o que você precisa. Posso te orientar sobre:\n\n${XT_TOPICS_PT}\n\n${XT_TOPICS_CLOSING_PT}`;
+    },
+    smallTalk: () => `Olá! 😊 Sou o agente Peru Multipaís da Aldeas Infantiles SOS. Me conte o que você precisa. Posso te orientar sobre:\n\n${XT_TOPICS_PT}\n\n${XT_TOPICS_CLOSING_PT}`,
+    fallbackNoExcel: (org) => `Obrigado por compartilhar. Não tenho uma orientação precisa sobre isso por aqui. Recomendo entrar em contato pelos canais oficiais da ${org} para que possam te ajudar com o seu caso.`,
+  },
+};
+
+// Heurística para detectar portugués en un mensaje corto o largo: letras y
+// palabras que no se usan en español. Ante la duda, devuelve false (español).
+// Límites de palabra con soporte de acentos ((?<!\p{L}) / (?!\p{L})): el \b de
+// JavaScript no considera letra la "á" de "olá".
+const PT_HINT_REGEX = /[ãõç]|(?<!\p{L})(voc[eê]|n[aã]o|ol[aá]|oi|obrigad[oa]|meu|minha|meus|minhas|filho|filha|filhos|filhas|posso|preciso|quero|tenho|estou|sou|bom\s+dia|boa\s+(tarde|noite)|ajuda|qual|onde|tamb[eé]m|ent[aã]o|isso|essa|esse|muito|fa[cç]o|trabalhar|direitos|documento\s+de\s+identidade)(?!\p{L})/iu;
+
+function looksPortuguese(text) {
+  return PT_HINT_REGEX.test(String(text || ""));
+}
+
+// Textos fijos de cara al usuario. `userText` (opcional) es el mensaje de la
+// persona: en los países que responden en el idioma de cada mensaje (XT), si
+// está en portugués se usan los textos en portugués. El resto de países ignora
+// `userText` y conserva exactamente sus textos.
+function strings(countryCode, userText) {
+  const cc = String(countryCode || "").toUpperCase();
+  if (usesAutoLanguage(cc) && looksPortuguese(userText)) {
+    return { ...STRINGS.pt, ...(COUNTRY_STRINGS_PT[cc] || {}) };
+  }
   const base = STRINGS[getLang(countryCode)] || STRINGS.es;
-  const own = COUNTRY_STRINGS[String(countryCode || "").toUpperCase()];
+  const own = COUNTRY_STRINGS[cc];
   return own ? { ...base, ...own } : base;
 }
 
@@ -242,6 +287,7 @@ module.exports = {
   getLang,
   usesRichFormat,
   usesAutoLanguage,
+  looksPortuguese,
   langDirective,
   strings,
   stepSummarySystem,
