@@ -8,7 +8,7 @@ process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "dummy";
 const { test } = require("node:test");
 const assert = require("node:assert");
 
-const { usesRichFormat, langDirective, strings } = require("../lang");
+const { usesRichFormat, usesAutoLanguage, langDirective, strings } = require("../lang");
 const { usesStrictContact, datosContainAllTokens, guardGroundedContactInfo } = require("../rag-service");
 const { mergeDatos } = require("../datos-text");
 
@@ -57,6 +57,14 @@ test("la directiva de formato solo se anexa a XT", () => {
   assert.strictEqual(langDirective("PE"), "");
   assert.strictEqual(langDirective("CO"), "");
   assert.doesNotMatch(langDirective("BR"), /FORMATO DE RESPUESTA/);
+});
+
+test("solo XT responde en el idioma de cada mensaje; BR sigue fijo en portugués", () => {
+  assert.strictEqual(usesAutoLanguage("XT"), true);
+  for (const cc of ["PE", "CO", "BR"]) assert.strictEqual(usesAutoLanguage(cc), false);
+  assert.match(langDirective("XT"), /MISMO idioma del ÚLTIMO mensaje/);
+  assert.match(langDirective("BR"), /SEMPRE em português/);
+  assert.doesNotMatch(langDirective("BR"), /MISMO idioma del ÚLTIMO mensaje/);
 });
 
 test("XT se presenta como agente Perú Multipaís, sin hablar de programas y servicios", () => {

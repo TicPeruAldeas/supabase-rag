@@ -52,9 +52,24 @@ FORMATO DE RESPUESTA PARA WHATSAPP (OBLIGATORIO; reemplaza cualquier indicación
 - Si las instrucciones anteriores piden un formato exacto (por ejemplo "Paso X de N:" o un JSON), respétalo y aplica las viñetas solo dentro del texto de la explicación.
 - Si solo debes hacer una pregunta, hazla en una sola frase, sin viñetas.`;
 
+// Países que responden en el idioma de cada mensaje (por ahora solo el de
+// PRUEBA XT, para que equipos de Brasil puedan probarlo en portugués). El
+// contenido sigue en español y el modelo lo traduce al responder. Los textos
+// fijos (bienvenida, saludo, avisos) siguen en el idioma del país.
+const AUTO_LANG_COUNTRIES = new Set(["XT"]);
+
+function usesAutoLanguage(countryCode) {
+  return AUTO_LANG_COUNTRIES.has(String(countryCode || "").toUpperCase());
+}
+
+const AUTO_LANG_DIRECTIVE = `
+
+IDIOMA DE RESPUESTA (OBLIGATORIO): Responde en el MISMO idioma del ÚLTIMO mensaje del usuario. Si escribe en portugués, responde en portugués de Brasil; si escribe en español, responde en español. El contenido de la fuente está en español: tradúcelo con naturalidad, pero NO traduzcas ni cambies nombres propios, nombres de instituciones u organismos, siglas, teléfonos, correos ni enlaces: cópialos exactamente como aparecen en la fuente. Traduce también las frases fijas de formato y las preguntas de cierre que te indiquen las instrucciones (por ejemplo, en portugués "Paso 1 de 5:" se escribe "Passo 1 de 5:" y "¿Quieres que te diga el siguiente paso?" se escribe "Quer que eu te diga o próximo passo?"), sin mezclar idiomas en la misma respuesta. Si la respuesta debe ser un JSON, mantén las claves y los valores de control (como "accion") exactamente como se piden y aplica el idioma solo al texto para el usuario. Esta instrucción anula cualquier indicación anterior de responder siempre en español.`;
+
 function langDirective(countryCode) {
   const format = usesRichFormat(countryCode) ? RICH_FORMAT_DIRECTIVE : "";
-  return (LANG_DIRECTIVE[getLang(countryCode)] || "") + format;
+  const lang = usesAutoLanguage(countryCode) ? AUTO_LANG_DIRECTIVE : (LANG_DIRECTIVE[getLang(countryCode)] || "");
+  return lang + format;
 }
 
 // ── Textos de cara al usuario ─────────────────────────────────
@@ -226,6 +241,7 @@ function analysisSystem(countryCode, orgName) {
 module.exports = {
   getLang,
   usesRichFormat,
+  usesAutoLanguage,
   langDirective,
   strings,
   stepSummarySystem,
