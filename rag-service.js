@@ -558,6 +558,19 @@ const COST_PER_MTOK = {
 const FLOW_MATCH_COUNT = envNumber("FLOW_MATCH_COUNT", 5);
 const FLOW_MIN_SIMILARITY = envNumber("FLOW_MIN_SIMILARITY", 0.35);
 const FLOW_RERANK_HIGH_CONFIDENCE = envNumber("FLOW_RERANK_HIGH_CONFIDENCE", 0.72);
+// Ventaja mínima del 1.º candidato sobre el 2.º para saltarse el reranker (~2 s
+// de Claude). Medido en XT: con ventaja >= 0.10 el reranker siempre coincidió con
+// el 1.º; los errores del 1.º se dieron con candidatos empatados (ventaja ~0).
+const FLOW_RERANK_MIN_MARGIN = envNumber("FLOW_RERANK_MIN_MARGIN", 0.10);
+
+// ¿Se puede usar el 1.º candidato sin reranker? Sí si es el único, si su
+// similitud es alta o si le saca una ventaja clara al 2.º.
+function canSkipRerank(candidates) {
+  const [top, second] = candidates;
+  if (!second) return true;
+  const topSim = top.similarity ?? 0;
+  return topSim >= FLOW_RERANK_HIGH_CONFIDENCE || topSim - (second.similarity ?? 0) >= FLOW_RERANK_MIN_MARGIN;
+}
 
 function perMillion(tokens, usdPerMillion) {
   return ((tokens || 0) * usdPerMillion) / 1_000_000;
@@ -983,7 +996,11 @@ async function chooseBestFlowCandidate(countryCode, question, candidates, opts =
   if (!Array.isArray(candidates) || candidates.length === 0) return null;
 
   const top = candidates[0];
-  if (candidates.length === 1 || (top.similarity ?? 0) >= FLOW_RERANK_HIGH_CONFIDENCE) {
+  // XT también se salta el reranker cuando el 1.º le saca ventaja clara al 2.º.
+  const skip = FAST_RERANK_COUNTRIES.has(String(countryCode || "").toUpperCase())
+    ? canSkipRerank(candidates)
+    : candidates.length === 1 || (top.similarity ?? 0) >= FLOW_RERANK_HIGH_CONFIDENCE;
+  if (skip) {
     return top;
   }
 
@@ -2417,6 +2434,7 @@ module.exports = {
   usesStrictContact,
   usesReexplain,
   rerankModelParams,
+  canSkipRerank,
   isConfusionMessage,
   confusionLevel,
   datosContainAllTokens,

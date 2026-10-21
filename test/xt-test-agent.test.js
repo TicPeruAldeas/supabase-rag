@@ -159,3 +159,9 @@ test("XT usa Haiku 5.5 sin pensamiento para el reranker; PE, CO y BR siguen con 
     assert.deepStrictEqual(rerankModelParams(cc), { model: "claude-sonnet-4-6", temperature: 0 });
   }
 });
+
+test("XT se salta el reranker si el 1.º tema le saca ventaja clara al 2.º; PE, CO y BR no cambian", async () => {
+  const { canSkipRerank } = require("../rag-service");
+  assert.strictEqual(canSkipRerank([{ similarity: 0.61 }, { similarity: 0.40 }]), true);
+  assert.strictEqual(canSkipRerank([{ similarity: 0.60 }, { similarity: 0.58 }]), false);
+});

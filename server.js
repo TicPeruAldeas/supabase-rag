@@ -378,12 +378,42 @@ function runSerialized(key, task) {
   return current;
 }
 
+// ── Indicador "escribiendo…" ──────────────────────────────────
+// Marca el mensaje entrante como leído y muestra "escribiendo…" al usuario
+// mientras se genera la respuesta (Meta lo quita al enviar la respuesta o a los
+// ~25 s). No acelera nada, pero evita que la espera parezca un bot colgado.
+// Nunca bloquea ni rompe el flujo: cualquier error solo se registra.
+// Por ahora solo en el agente de PRUEBA (XT); PE, CO y BR no cambian.
+const TYPING_INDICATOR_COUNTRIES = new Set(["XT"]);
+
+async function sendTypingIndicator(messageId, phoneNumberId, token) {
+  if (!messageId) return;
+  try {
+    const response = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: messageId,
+        typing_indicator: { type: "text" },
+      }),
+    });
+    if (!response.ok) console.warn(`⚠️  Indicador "escribiendo" rechazado: ${(await response.text()).slice(0, 200)}`);
+  } catch (err) {
+    console.warn(`⚠️  Indicador "escribiendo" falló: ${err.message}`);
+  }
+}
+
 // Procesa un mensaje entrante completo: guarda turno, consulta RAG, responde y
 // guarda la respuesta. Los `await` de guardado mantienen el orden cronológico en
 // la BD para que el historial del siguiente mensaje sea consistente.
 async function handleIncomingMessage({ from, text, countryCode, phoneNumberId, token, messageId, incomingPhoneNumberId }) {
   try {
     console.log(`📩 [${countryCode}] ${from}: ${text}`);
+
+    // Sin await: corre en paralelo con el guardado y la consulta RAG.
+    if (TYPING_INDICATOR_COUNTRIES.has(countryCode)) sendTypingIndicator(messageId, phoneNumberId, token);
 
     await saveConversationTurn({
       userId: from,
