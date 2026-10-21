@@ -830,6 +830,76 @@ async function getLastFlowId(userId, countryCode) {
   return null;
 }
 
+// ── Agente de PRUEBA (XT): "no entendí" → volver a explicar ──
+// Si la persona dice que no entendió, se reformula la ÚLTIMA respuesta con
+// palabras más simples (desde el mismo contenido del Excel, sin inventar). Cada
+// "no entendí" seguido baja un nivel más. PE, CO y BR siguen el flujo normal.
+const REEXPLAIN_COUNTRIES = new Set(["XT"]);
+
+function usesReexplain(countryCode) {
+  return REEXPLAIN_COUNTRIES.has(String(countryCode || "").toUpperCase());
+}
+
+const CONFUSION_REGEX = /(no\s+(te\s+|le\s+|lo\s+)?(entend[ií]|entiendo|comprend[ií]|comprendo|capto|capt[ée])|no\s+(me\s+)?(qued[oó]|est[aá])\s+claro|no\s+s[eé]\s+qu[eé]\s+(es|significa)|qu[eé]\s+(significa|quiere\s+decir)\s+(eso|esto)|expl[ií]ca(me|lo)?\s+(mejor|m[aá]s\s+(simple|f[aá]cil|sencillo|claro)|de\s+nuevo|otra\s+vez|con\s+otras\s+palabras)|m[aá]s\s+(simple|sencillo|f[aá]cil)|en\s+palabras\s+(simples|sencillas)|n[aã]o\s+(entendi|entendo|compreendi|ficou\s+claro)|explica\s+melhor|mais\s+simples)/i;
+
+function isConfusionMessage(text) {
+  const t = String(text || "").trim();
+  return t.length > 0 && t.length <= 80 && CONFUSION_REGEX.test(t);
+}
+
+// Cuántos "no entendí" seguidos lleva la persona (contando el actual).
+function confusionLevel(history) {
+  let level = 1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].role !== "user") continue;
+    if (!isConfusionMessage(history[i].content)) break;
+    level++;
+  }
+  return level;
+}
+
+const REEXPLAIN_LEVELS = {
+  1: "Explícalo de nuevo de forma más simple y más corta: solo los puntos clave, con otras palabras (no repitas la misma redacción).",
+  2: "La persona sigue sin entender. Explícalo MUCHO más simple: máximo 3 ideas, frases muy cortas y un ejemplo de la vida diaria.",
+  3: "La persona aún no entiende. Explica solo la idea más importante en 2 o 3 frases muy simples y pregúntale qué parte exacta no quedó clara. Ofrécele también comunicarse con una persona del equipo de la organización.",
+};
+
+async function reexplainLastAnswer(question, history, level, flow, orgName, countryCode) {
+  return startActiveObservation("claude-reexplain", async (obs) => {
+    obs.update({ input: { question, level, flow_id: flow?.flow_id || null } });
+    const lastAnswer = [...history].reverse().find(m => m.role === "assistant")?.content || "";
+    const source = flow?.answer ? `\n\nINFORMACIÓN DE LA FUENTE (Excel):\n${flow.answer}` : "";
+    const msg = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: 500,
+      system: [
+        { type: "text", text: STATIC_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+        {
+          type: "text",
+          text: `Organización activa: ${orgName}. País: ${countryCode}. La persona dijo que NO entendió tu última respuesta.
+${REEXPLAIN_LEVELS[Math.min(level, 3)]}
+- Usa palabras de todos los días y explica cualquier término técnico o legal con palabras simples.
+- Usa solo la información de tu respuesta anterior y de la fuente; no inventes datos, teléfonos ni requisitos.
+- No pidas disculpas largas ni digas que la pregunta es difícil.
+- Termina preguntando, en una frase corta, si ahora quedó más claro.
+
+TU RESPUESTA ANTERIOR:
+${lastAnswer}${source}${langDirective(countryCode)}`,
+        },
+      ],
+      messages: [...history, { role: "user", content: question }],
+    });
+    const resp = msg.content[0]?.text || lastAnswer;
+    obs.update({
+      output: resp,
+      model: CLAUDE_MODEL,
+      usageDetails: anthropicUsageDetails(msg.usage),
+      costDetails: anthropicCostDetails(msg.usage),
+    });
+    return resp;
+  }, { asType: "generation" });
+}
+
 // ── Guardar turno ─────────────────────────────────────────────
 async function saveConversationTurn({ userId, countryCode, role, message, source = "api", metadata = {} }) {
   const { error } = await supabase
@@ -1887,6 +1957,21 @@ async function askAI(userId, countryCode, question, options = {}) {
           });
         };
 
+        // "NO ENTENDÍ" (solo XT) — se vuelve a explicar la última respuesta, más
+        // simple en cada intento. No toca el estado de un paso a paso activo.
+        if (usesReexplain(countryCode) && history.some(m => m.role === "assistant") && isConfusionMessage(question)) {
+          const level = confusionLevel(history);
+          const lastFlowId = await getLastFlowId(userId, countryCode);
+          const lastFlow = lastFlowId ? await getFlowById(countryCode, lastFlowId) : null;
+          const response = await reexplainLastAnswer(question, history, level, lastFlow, orgName, countryCode);
+          return finishTrace(response, {
+            search_type: "reexplain",
+            route: "reexplain",
+            reexplain_level: level,
+            ...(lastFlow ? { flow_id: lastFlow.flow_id, flow_type: lastFlow.flow_type } : {}),
+          });
+        }
+
         const activeState = await getActiveState(userId, countryCode);
         if (activeState && !(activeState.flow_type === "paso a paso" || activeState.flow_type === "paso_a_paso")) {
           const elapsed = Date.now() - new Date(activeState.updated_at).getTime();
@@ -2317,6 +2402,9 @@ module.exports = {
   buildTopicsMenu,
   // Helpers puros expuestos para pruebas unitarias (sin efectos de red).
   usesStrictContact,
+  usesReexplain,
+  isConfusionMessage,
+  confusionLevel,
   datosContainAllTokens,
   guardGroundedContactInfo,
   hasUnsupportedContactInfo,

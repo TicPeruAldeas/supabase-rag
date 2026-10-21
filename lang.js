@@ -50,7 +50,12 @@ FORMATO DE RESPUESTA PARA WHATSAPP (OBLIGATORIO; reemplaza cualquier indicación
 - Si hace falta continuar, cierra con UNA pregunta corta.
 - Puedes resaltar una palabra clave con *asteriscos simples* (negrita de WhatsApp), con moderación. No uses "**", títulos con "#" ni tablas.
 - Si las instrucciones anteriores piden un formato exacto (por ejemplo "Paso X de N:" o un JSON), respétalo y aplica las viñetas solo dentro del texto de la explicación.
-- Si solo debes hacer una pregunta, hazla en una sola frase, sin viñetas.`;
+- Si solo debes hacer una pregunta, hazla en una sola frase, sin viñetas.
+
+LENGUAJE CLARO (OBLIGATORIO): escribe para que te entienda cualquier persona, aunque haya estudiado poco o el español no sea su idioma.
+- Usa palabras de todos los días y frases cortas, de una idea cada una.
+- Si usas un término técnico o legal, explícalo en la misma frase con palabras simples (por ejemplo: "calidad migratoria, es decir, el permiso para vivir aquí").
+- Habla de forma directa y cercana (tú), sin tecnicismos innecesarios ni siglas sin explicar.`;
 
 // Países que responden en el idioma de cada mensaje (por ahora solo el de
 // PRUEBA XT, para que equipos de Brasil puedan probarlo en portugués). El

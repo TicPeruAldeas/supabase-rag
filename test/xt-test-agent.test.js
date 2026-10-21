@@ -121,3 +121,26 @@ test("PE, CO y BR conservan sus textos originales aunque se les pase un menú", 
   }
   assert.match(strings("PE").consentText("Ana"), /programas y servicios/);
 });
+
+test("XT vuelve a explicar cuando la persona no entendió; PE, CO y BR no", () => {
+  const { usesReexplain, isConfusionMessage, confusionLevel } = require("../rag-service");
+  assert.strictEqual(usesReexplain("XT"), true);
+  for (const cc of ["PE", "CO", "BR"]) assert.strictEqual(usesReexplain(cc), false);
+  for (const t of ["no entendí", "No entiendo", "no me quedó claro", "explícame mejor", "¿qué significa eso?", "más simple porfa", "no comprendo nada", "Não entendi", "explica melhor"]) {
+    assert.strictEqual(isConfusionMessage(t), true, t);
+  }
+  for (const t of ["¿Cómo pido refugio?", "sí", "gracias", "entendí, gracias", "Mi hijo no entiende las clases porque llegó de Venezuela y le cuesta mucho adaptarse"]) {
+    assert.strictEqual(isConfusionMessage(t), false, t);
+  }
+  const h = [
+    { role: "user", content: "¿Cómo regularizo?" }, { role: "assistant", content: "…" },
+    { role: "user", content: "no entendí" }, { role: "assistant", content: "…" },
+  ];
+  assert.strictEqual(confusionLevel(h), 2);
+  assert.strictEqual(confusionLevel(h.slice(0, 2)), 1);
+});
+
+test("solo XT pide lenguaje claro", () => {
+  assert.match(langDirective("XT"), /LENGUAJE CLARO/);
+  for (const cc of ["PE", "CO", "BR"]) assert.doesNotMatch(langDirective(cc), /LENGUAJE CLARO/);
+});
