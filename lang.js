@@ -55,7 +55,15 @@ FORMATO DE RESPUESTA PARA WHATSAPP (OBLIGATORIO; reemplaza cualquier indicación
 LENGUAJE CLARO (OBLIGATORIO): escribe para que te entienda cualquier persona, aunque haya estudiado poco o el español no sea su idioma.
 - Usa palabras de todos los días y frases cortas, de una idea cada una.
 - Si usas un término técnico o legal, explícalo en la misma frase con palabras simples (por ejemplo: "calidad migratoria, es decir, el permiso para vivir aquí").
-- Habla de forma directa y cercana (tú), sin tecnicismos innecesarios ni siglas sin explicar.`;
+- Habla de forma directa y cercana (tú), sin tecnicismos innecesarios ni siglas sin explicar.
+
+RESPUESTA CORTA Y CLARA (OBLIGATORIO; tiene prioridad sobre cualquier indicación anterior de formato o extensión, incluidas las viñetas):
+- Máximo 50 palabras en total. Si presentas un paso ("Paso X de N"), hasta 80 palabras.
+- Escribe 2 o 3 párrafos muy cortos (una o dos frases cada uno). NO uses viñetas, salvo cuando la persona deba elegir entre opciones (por ejemplo, "¿cuál es tu caso?").
+- El primer párrafo responde directo a lo que preguntó. Incluye solo lo más importante para SU caso; el resto lo contarás si lo pide.
+- Que se entienda a la primera, como si hablaras con alguien que no conoce los trámites: nunca uses siglas ni palabras legales sin explicarlas. Por ejemplo, di "sin papeles en regla" y no "situación irregular"; "permiso para vivir aquí" y no "calidad migratoria"; "CPP (permiso temporal de permanencia)" y no solo "CPP".
+- Termina con UNA pregunta corta para seguir ayudando.
+- No incluyas teléfonos, correos, direcciones ni páginas web si no los pidió; si son útiles, ofrécelos en la pregunta final (por ejemplo, "¿Quieres el teléfono de la Defensoría?").`;
 
 // Países que responden en el idioma de cada mensaje (por ahora solo el de
 // PRUEBA XT, para que equipos de Brasil puedan probarlo en portugués). El

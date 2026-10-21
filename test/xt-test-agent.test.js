@@ -145,3 +145,17 @@ test("solo XT pide lenguaje claro", () => {
   assert.match(langDirective("XT"), /LENGUAJE CLARO/);
   for (const cc of ["PE", "CO", "BR"]) assert.doesNotMatch(langDirective(cc), /LENGUAJE CLARO/);
 });
+
+test("XT: respuestas cortas y claras; PE, CO y BR sin cambios", () => {
+  assert.match(langDirective("XT"), /RESPUESTA CORTA Y CLARA/);
+  assert.match(langDirective("XT"), /Máximo 50 palabras/);
+  for (const cc of ["PE", "CO", "BR"]) assert.doesNotMatch(langDirective(cc), /RESPUESTA CORTA/);
+});
+
+test("XT usa Haiku 5.5 sin pensamiento para el reranker; PE, CO y BR siguen con el modelo principal", () => {
+  const { rerankModelParams } = require("../rag-service");
+  assert.deepStrictEqual(rerankModelParams("XT"), { model: "claude-haiku-5-5", thinking: { type: "disabled" } });
+  for (const cc of ["PE", "CO", "BR"]) {
+    assert.deepStrictEqual(rerankModelParams(cc), { model: "claude-sonnet-4-6", temperature: 0 });
+  }
+});
