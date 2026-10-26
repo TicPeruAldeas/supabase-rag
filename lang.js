@@ -65,11 +65,12 @@ RESPUESTA CORTA Y CLARA (OBLIGATORIO; tiene prioridad sobre cualquier indicació
 - Termina con UNA pregunta corta para seguir ayudando.
 - No incluyas teléfonos, correos, direcciones ni páginas web si no los pidió; si son útiles, ofrécelos en la pregunta final (por ejemplo, "¿Quieres el teléfono de la Defensoría?").`;
 
-// Países que responden en el idioma de cada mensaje (por ahora solo el de
-// PRUEBA XT, para que equipos de Brasil puedan probarlo en portugués). El
-// contenido sigue en español y el modelo lo traduce al responder. Los textos
-// fijos (bienvenida, saludo, avisos) siguen en el idioma del país.
-const AUTO_LANG_COUNTRIES = new Set(["XT"]);
+// Países que responden en el idioma de cada mensaje: el contenido sigue en
+// español y el modelo lo traduce al responder, y los textos fijos (bienvenida,
+// saludo, avisos) salen en portugués si le escriben en portugués. Desactivado
+// también en XT (26/10/2026): el agente de prueba responde siempre en español
+// para no confundir a los equipos. Para reactivarlo, añadir "XT".
+const AUTO_LANG_COUNTRIES = new Set([]);
 
 function usesAutoLanguage(countryCode) {
   return AUTO_LANG_COUNTRIES.has(String(countryCode || "").toUpperCase());

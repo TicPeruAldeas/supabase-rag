@@ -68,13 +68,10 @@ test("detecta portugués sin confundirlo con español", () => {
   }
 });
 
-test("XT usa los textos fijos en portugués cuando le escriben en portugués", () => {
-  assert.match(strings("XT", "Olá").smallTalk("Org"), /^Olá! 😊 Sou o agente Peru Multipaís/);
-  assert.match(strings("XT", "Olá").welcome("Ana"), /^Obrigado\/a, Ana! 😊 Me conte o que você precisa/);
-  assert.match(strings("XT", "Olá").consentText("Ana"), /^Olá, Ana! 👋 Seja bem-vindo\/a/);
-  assert.match(strings("XT", "Qual é o WhatsApp?").contactNotFound("Org"), /^Não tenho esse contato por aqui/);
-  assert.match(strings("XT", "Não sei").fallbackNoExcel("Org"), /^Obrigado por compartilhar/);
-  // En español (o sin texto) XT mantiene sus textos de siempre.
+test("XT usa sus textos fijos en español aunque le escriban en portugués", () => {
+  assert.match(strings("XT", "Olá").smallTalk("Org"), /^¡Hola! 😊 Soy el agente Perú Multipaís/);
+  assert.match(strings("XT", "Olá").welcome("Ana"), /^¡Gracias, Ana! 😊/);
+  assert.match(strings("XT", "Olá").consentText("Ana"), /^¡Hola, Ana! 👋 Bienvenido\/a/);
   assert.match(strings("XT", "Hola").smallTalk("Org"), /^¡Hola! 😊 Soy el agente Perú Multipaís/);
   assert.match(strings("XT").welcome("Ana"), /^¡Gracias, Ana! 😊/);
 });
@@ -89,10 +86,9 @@ test("PE, CO y BR ignoran el texto del mensaje al elegir los textos fijos", () =
   }
 });
 
-test("solo XT responde en el idioma de cada mensaje; BR sigue fijo en portugués", () => {
-  assert.strictEqual(usesAutoLanguage("XT"), true);
-  for (const cc of ["PE", "CO", "BR"]) assert.strictEqual(usesAutoLanguage(cc), false);
-  assert.match(langDirective("XT"), /MISMO idioma del ÚLTIMO mensaje/);
+test("ningún país responde en el idioma de cada mensaje; BR sigue fijo en portugués", () => {
+  for (const cc of ["XT", "PE", "CO", "BR"]) assert.strictEqual(usesAutoLanguage(cc), false);
+  assert.doesNotMatch(langDirective("XT"), /MISMO idioma del ÚLTIMO mensaje/);
   assert.match(langDirective("BR"), /SEMPRE em português/);
   assert.doesNotMatch(langDirective("BR"), /MISMO idioma del ÚLTIMO mensaje/);
 });
