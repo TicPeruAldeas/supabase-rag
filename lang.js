@@ -166,20 +166,20 @@ const PE_TOPICS = [
   "🤝 *Acceso a derechos:* trabajo, alimentación, salud, colegio y apoyo por discapacidad",
 ].join("\n");
 
-// Textos del "agente Perú Multipaís". Temas escritos a mano (con ejemplos), no
+// Textos del "Agente Perú Multipaís". Temas escritos a mano (con ejemplos), no
 // tomados de las categorías del Excel: si se agrega una categoría nueva, hay
 // que añadirla en la lista de temas del país.
 function peruAgentStrings(topics) {
   return {
     consentText: (userName) => {
       const saludo = userName ? `¡Hola, ${userName}! 👋` : "¡Hola! 👋";
-      return `${saludo} Bienvenido/a 😊. Soy el agente Perú Multipaís de Aldeas Infantiles SOS. Estoy aquí para orientarte sobre documentos, tus derechos y la protección de tus hijos, sin importar tu situación migratoria. *Todo lo que me cuentes es confidencial.*\n\nPresiona "Continuar" y empecemos 👇`;
+      return `${saludo} Bienvenido/a 😊. Soy el Agente Perú Multipaís de Aldeas Infantiles SOS. Estoy aquí para orientarte sobre documentos, tus derechos y la protección de tus hijos, sin importar tu situación migratoria. *Todo lo que me cuentes es confidencial.*\n\nPresiona "Continuar" y empecemos 👇`;
     },
     welcome: (userName) => {
       const saludo = userName ? `¡Gracias, ${userName}! 😊` : "¡Gracias! 😊";
       return `${saludo} Cuéntame qué necesitas. Puedo orientarte sobre:\n\n${topics}\n\n${XT_TOPICS_CLOSING}`;
     },
-    smallTalk: () => `¡Hola! 😊 Soy el agente Perú Multipaís de Aldeas Infantiles SOS. Cuéntame qué necesitas. Puedo orientarte sobre:\n\n${topics}\n\n${XT_TOPICS_CLOSING}`,
+    smallTalk: () => `¡Hola! 😊 Soy el Agente Perú Multipaís de Aldeas Infantiles SOS. Cuéntame qué necesitas. Puedo orientarte sobre:\n\n${topics}\n\n${XT_TOPICS_CLOSING}`,
     // Sin lista de temas: los temas se muestran solo en el saludo y la
     // bienvenida, no cada vez que una pregunta no encuentra respuesta.
     fallbackNoExcel: (org) => `Gracias por contarme. No tengo una orientación precisa sobre eso por aquí. Te recomiendo comunicarte por los canales oficiales de ${org} para que puedan ayudarte con tu caso.`,
@@ -206,13 +206,13 @@ const COUNTRY_STRINGS_PT = {
   XT: {
     consentText: (userName) => {
       const saudacao = userName ? `Olá, ${userName}! 👋` : "Olá! 👋";
-      return `${saudacao} Seja bem-vindo/a 😊. Sou o agente Peru Multipaís da Aldeas Infantiles SOS. Estou aqui para te orientar sobre documentos, seus direitos e a proteção dos seus filhos, independentemente da sua situação migratória. *Tudo o que você me contar é confidencial.*\n\nToque em "Continuar" e vamos começar 👇`;
+      return `${saudacao} Seja bem-vindo/a 😊. Sou o Agente Peru Multipaís da Aldeas Infantiles SOS. Estou aqui para te orientar sobre documentos, seus direitos e a proteção dos seus filhos, independentemente da sua situação migratória. *Tudo o que você me contar é confidencial.*\n\nToque em "Continuar" e vamos começar 👇`;
     },
     welcome: (userName) => {
       const saudacao = userName ? `Obrigado/a, ${userName}! 😊` : "Obrigado/a! 😊";
       return `${saudacao} Me conte o que você precisa. Posso te orientar sobre:\n\n${XT_TOPICS_PT}\n\n${XT_TOPICS_CLOSING_PT}`;
     },
-    smallTalk: () => `Olá! 😊 Sou o agente Peru Multipaís da Aldeas Infantiles SOS. Me conte o que você precisa. Posso te orientar sobre:\n\n${XT_TOPICS_PT}\n\n${XT_TOPICS_CLOSING_PT}`,
+    smallTalk: () => `Olá! 😊 Sou o Agente Peru Multipaís da Aldeas Infantiles SOS. Me conte o que você precisa. Posso te orientar sobre:\n\n${XT_TOPICS_PT}\n\n${XT_TOPICS_CLOSING_PT}`,
     fallbackNoExcel: (org) => `Obrigado por compartilhar. Não tenho uma orientação precisa sobre isso por aqui. Recomendo entrar em contato pelos canais oficiais da ${org} para que possam te ajudar com o seu caso.`,
   },
 };
