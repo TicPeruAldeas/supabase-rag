@@ -103,11 +103,11 @@ test("XT se presenta como Agente Perú Multipaís, sin hablar de programas y ser
 
 test("la bienvenida y el saludo de XT muestran los temas con ejemplos", () => {
   const welcome = strings("XT").welcome("Ana");
-  assert.match(welcome, /^¡Gracias, Ana! 😊 Cuéntame qué necesitas\. Puedo orientarte sobre:\n\n• \*Documentación y situación migratoria:\* papeles/);
-  assert.match(welcome, /• \*Acceso a derechos:\* salud, colegio, trabajo, banco, vivienda\n\nEscríbelo con tus propias palabras, sin preocuparte por cómo lo digas 💙$/);
+  assert.match(welcome, /^¡Gracias, Ana! 😊 Cuéntame qué necesitas\. Puedo orientarte sobre:\n\n📄 \*Documentación y situación migratoria:\* documentos, regularización/);
+  assert.match(welcome, /🤝 \*Acceso a derechos:\* salud, colegio, trabajo, banco y vivienda\n\nEscríbelo con tus propias palabras, sin preocuparte por cómo lo digas 💙$/);
   assert.doesNotMatch(welcome, /servicios|La organización/);
   assert.match(strings("XT").welcome(null), /^¡Gracias! 😊/);
-  assert.match(strings("XT").smallTalk("Aldeas Infantiles SOS Perú"), /^¡Hola! 😊 Soy el Agente Perú Multipaís de Aldeas Infantiles SOS\..*\n• \*Protección de niñas, niños y adolescentes:\* violencia, abuso, pensión de alimentos\n/s);
+  assert.match(strings("XT").smallTalk("Aldeas Infantiles SOS Perú"), /^¡Hola! 😊 Soy el Agente Perú Multipaís de Aldeas Infantiles SOS\..*\n🛡️ \*Protección de niñas, niños y adolescentes:\* violencia, abuso, pensión de alimentos y crianza\n/s);
   assert.doesNotMatch(strings("XT", "Olá").welcome("Ana"), /A organização/);
 });
 

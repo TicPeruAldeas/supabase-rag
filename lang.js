@@ -152,9 +152,9 @@ const STRINGS = {
 // que listan temas reciben `topics` (líneas "• Tema" o ""); los textos base
 // ignoran ese argumento, por eso se puede pasar siempre.
 const XT_TOPICS = [
-  "• *Documentación y situación migratoria:* papeles, refugio, multas, viajes",
-  "• *Protección de niñas, niños y adolescentes:* violencia, abuso, pensión de alimentos",
-  "• *Acceso a derechos:* salud, colegio, trabajo, banco, vivienda",
+  "📄 *Documentación y situación migratoria:* documentos, regularización, refugio, multas y viajes",
+  "🛡️ *Protección de niñas, niños y adolescentes:* violencia, abuso, pensión de alimentos y crianza",
+  "🤝 *Acceso a derechos:* salud, colegio, trabajo, banco y vivienda",
 ].join("\n");
 const XT_TOPICS_CLOSING = "Escríbelo con tus propias palabras, sin preocuparte por cómo lo digas 💙";
 
@@ -196,9 +196,9 @@ const COUNTRY_STRINGS = {
 // textos base "pt"). El nombre de la organización se mantiene en español
 // ("Aldeas Infantiles SOS"), igual que el resto de nombres propios.
 const XT_TOPICS_PT = [
-  "• *Documentação e situação migratória:* papéis, refúgio, multas, viagens",
-  "• *Proteção de crianças e adolescentes:* violência, abuso, pensão alimentícia",
-  "• *Acesso a direitos:* saúde, escola, trabalho, banco, moradia",
+  "📄 *Documentação e situação migratória:* documentos, regularização, refúgio, multas e viagens",
+  "🛡️ *Proteção de crianças e adolescentes:* violência, abuso, pensão alimentícia e criação dos filhos",
+  "🤝 *Acesso a direitos:* saúde, escola, trabalho, banco e moradia",
 ].join("\n");
 const XT_TOPICS_CLOSING_PT = "Escreva com suas próprias palavras, sem se preocupar com a forma de dizer 💙";
 
