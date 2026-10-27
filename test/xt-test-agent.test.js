@@ -20,9 +20,9 @@ const ABUSO = mergeDatos(
 const ORG = "Aldeas Infantiles SOS Perú";
 const BLOQUEADO = { kind: "institution", token: "Ministerio" };
 
-test("contactos estrictos: activos solo en XT por ahora", () => {
+test("contactos estrictos: activos en XT y PE", () => {
   assert.strictEqual(usesStrictContact("XT"), true);
-  for (const cc of ["PE", "CO", "BR"]) assert.strictEqual(usesStrictContact(cc), false);
+  for (const cc of ["CO", "BR"]) assert.strictEqual(usesStrictContact(cc), false);
 });
 
 test("la búsqueda estricta exige TODAS las palabras en los Datos", () => {
@@ -41,20 +41,20 @@ test("pedido de contacto bloqueado en XT: nunca muestra la respuesta principal",
   assert.doesNotMatch(porTema, /no bañes/);
 });
 
-test("sin contactOnly (PE, CO, BR) el respaldo del guardarraíl no cambia", () => {
-  const r = guardGroundedContactInfo("WhatsApp del Ministerio…", ABUSO, ORG, "PE", BLOQUEADO);
+test("sin contactOnly (CO, BR) el respaldo del guardarraíl no cambia", () => {
+  const r = guardGroundedContactInfo("WhatsApp del Ministerio…", ABUSO, ORG, "CO", BLOQUEADO);
   assert.match(r, /no bañes/);
   assert.match(r, /Datos de contacto: Línea de atención/);
 });
 
-test("solo XT usa el formato de viñetas", () => {
+test("XT y PE usan el formato de viñetas; CO y BR no", () => {
   assert.strictEqual(usesRichFormat("XT"), true);
-  for (const cc of ["PE", "CO", "BR"]) assert.strictEqual(usesRichFormat(cc), false);
+  for (const cc of ["CO", "BR"]) assert.strictEqual(usesRichFormat(cc), false);
 });
 
-test("la directiva de formato solo se anexa a XT", () => {
+test("la directiva de formato se anexa a XT y PE", () => {
   assert.match(langDirective("XT"), /FORMATO DE RESPUESTA PARA WHATSAPP/);
-  assert.strictEqual(langDirective("PE"), "");
+  assert.strictEqual(langDirective("CO"), "");
   assert.strictEqual(langDirective("CO"), "");
   assert.doesNotMatch(langDirective("BR"), /FORMATO DE RESPUESTA/);
 });
@@ -111,18 +111,18 @@ test("la bienvenida y el saludo de XT muestran los temas con ejemplos", () => {
   assert.doesNotMatch(strings("XT", "Olá").welcome("Ana"), /A organização/);
 });
 
-test("PE, CO y BR conservan sus textos originales aunque se les pase un menú", () => {
-  for (const cc of ["PE", "CO", "BR"]) {
+test("CO y BR conservan sus textos originales aunque se les pase un menú", () => {
+  for (const cc of ["CO", "BR"]) {
     assert.strictEqual(strings(cc).welcome("Ana", "• X"), strings(cc).welcome("Ana"));
     assert.strictEqual(strings(cc).smallTalk("Org", "• X"), strings(cc).smallTalk("Org"));
   }
-  assert.match(strings("PE").consentText("Ana"), /programas y servicios/);
+  assert.match(strings("CO").consentText("Ana"), /programas y servicios/);
 });
 
-test("XT vuelve a explicar cuando la persona no entendió; PE, CO y BR no", () => {
+test("XT y PE vuelven a explicar cuando la persona no entendió; CO y BR no", () => {
   const { usesReexplain, isConfusionMessage, confusionLevel } = require("../rag-service");
   assert.strictEqual(usesReexplain("XT"), true);
-  for (const cc of ["PE", "CO", "BR"]) assert.strictEqual(usesReexplain(cc), false);
+  for (const cc of ["CO", "BR"]) assert.strictEqual(usesReexplain(cc), false);
   for (const t of ["no entendí", "No entiendo", "no me quedó claro", "explícame mejor", "¿qué significa eso?", "más simple porfa", "no comprendo nada", "Não entendi", "explica melhor"]) {
     assert.strictEqual(isConfusionMessage(t), true, t);
   }
@@ -137,21 +137,21 @@ test("XT vuelve a explicar cuando la persona no entendió; PE, CO y BR no", () =
   assert.strictEqual(confusionLevel(h.slice(0, 2)), 1);
 });
 
-test("solo XT pide lenguaje claro", () => {
+test("XT y PE piden lenguaje claro", () => {
   assert.match(langDirective("XT"), /LENGUAJE CLARO/);
-  for (const cc of ["PE", "CO", "BR"]) assert.doesNotMatch(langDirective(cc), /LENGUAJE CLARO/);
+  for (const cc of ["CO", "BR"]) assert.doesNotMatch(langDirective(cc), /LENGUAJE CLARO/);
 });
 
-test("XT: respuestas cortas y claras; PE, CO y BR sin cambios", () => {
+test("XT y PE: respuestas cortas y claras; CO y BR sin cambios", () => {
   assert.match(langDirective("XT"), /RESPUESTA CORTA Y CLARA/);
   assert.match(langDirective("XT"), /Máximo 50 palabras/);
-  for (const cc of ["PE", "CO", "BR"]) assert.doesNotMatch(langDirective(cc), /RESPUESTA CORTA/);
+  for (const cc of ["CO", "BR"]) assert.doesNotMatch(langDirective(cc), /RESPUESTA CORTA/);
 });
 
-test("XT usa Haiku 5.5 sin pensamiento para el reranker; PE, CO y BR siguen con el modelo principal", () => {
+test("XT y PE usan Haiku 5.5 sin pensamiento para el reranker; CO y BR siguen con el modelo principal", () => {
   const { rerankModelParams } = require("../rag-service");
   assert.deepStrictEqual(rerankModelParams("XT"), { model: "claude-haiku-5-5", thinking: { type: "disabled" } });
-  for (const cc of ["PE", "CO", "BR"]) {
+  for (const cc of ["CO", "BR"]) {
     assert.deepStrictEqual(rerankModelParams(cc), { model: "claude-sonnet-4-6", temperature: 0 });
   }
 });
@@ -160,4 +160,19 @@ test("XT se salta el reranker si el 1.º tema le saca ventaja clara al 2.º; PE,
   const { canSkipRerank } = require("../rag-service");
   assert.strictEqual(canSkipRerank([{ similarity: 0.61 }, { similarity: 0.40 }]), true);
   assert.strictEqual(canSkipRerank([{ similarity: 0.60 }, { similarity: 0.58 }]), false);
+});
+
+test("PE: mismas funciones que XT, con los temas de su matriz", () => {
+  const { usesReexplain, rerankModelParams } = require("../rag-service");
+  assert.strictEqual(usesStrictContact("PE"), true);
+  assert.strictEqual(usesRichFormat("PE"), true);
+  assert.strictEqual(usesReexplain("PE"), true);
+  assert.deepStrictEqual(rerankModelParams("PE"), rerankModelParams("XT"));
+  assert.strictEqual(langDirective("PE"), langDirective("XT"));
+  assert.match(strings("PE").consentText("Ana"), /^¡Hola, Ana! 👋 Bienvenido\/a 😊\. Soy el agente Perú Multipaís de Aldeas Infantiles SOS\./);
+  const welcome = strings("PE").welcome("Ana");
+  assert.match(welcome, /• \*Documentación y situación migratoria:\* papeles, carné de extranjería, multas, trámites de tus hijos/);
+  assert.match(welcome, /• \*Acceso a derechos:\* salud, colegio, trabajo, discapacidad, alimentación/);
+  assert.match(strings("PE").smallTalk("Org"), /separación familiar, crianza/);
+  assert.doesNotMatch(welcome, /banco, vivienda/); // temas de XT, no de PE
 });

@@ -847,7 +847,7 @@ async function getLastFlowId(userId, countryCode) {
 // Si la persona dice que no entendió, se reformula la ÚLTIMA respuesta con
 // palabras más simples (desde el mismo contenido del Excel, sin inventar). Cada
 // "no entendí" seguido baja un nivel más. PE, CO y BR siguen el flujo normal.
-const REEXPLAIN_COUNTRIES = new Set(["XT"]);
+const REEXPLAIN_COUNTRIES = new Set(["XT", "PE"]);
 
 function usesReexplain(countryCode) {
   return REEXPLAIN_COUNTRIES.has(String(countryCode || "").toUpperCase());
@@ -982,7 +982,7 @@ function truncateForRerank(text, maxChars = 900) {
 // menos por llamada, medido con conversaciones reales de XT) y que eligió los
 // mismos temas. Haiku 5.5 piensa por defecto y no admite temperature: se
 // desactiva el pensamiento para que responda rápido. PE, CO y BR no cambian.
-const FAST_RERANK_COUNTRIES = new Set(["XT"]);
+const FAST_RERANK_COUNTRIES = new Set(["XT", "PE"]);
 const FAST_RERANK_MODEL = "claude-haiku-5-5";
 
 function rerankModelParams(countryCode) {
@@ -1149,7 +1149,7 @@ function contactSearchTokens(text) {
 // caer en una fila ajena por una palabra suelta (p. ej. "salud" en los Datos de
 // la fila de abuso sexual) y responde "No tengo ese contacto". Se activa primero
 // en el país de PRUEBA (XT); para extenderlo, añadir aquí PE, CO, BR.
-const STRICT_CONTACT_COUNTRIES = new Set(["XT"]);
+const STRICT_CONTACT_COUNTRIES = new Set(["XT", "PE"]);
 
 function usesStrictContact(countryCode) {
   return STRICT_CONTACT_COUNTRIES.has(String(countryCode || "").toUpperCase());

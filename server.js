@@ -372,7 +372,7 @@ function runSerialized(key, task) {
 // ~25 s). No acelera nada, pero evita que la espera parezca un bot colgado.
 // Nunca bloquea ni rompe el flujo: cualquier error solo se registra.
 // Por ahora solo en el agente de PRUEBA (XT); PE, CO y BR no cambian.
-const TYPING_INDICATOR_COUNTRIES = new Set(["XT"]);
+const TYPING_INDICATOR_COUNTRIES = new Set(["XT", "PE"]);
 
 async function sendTypingIndicator(messageId, phoneNumberId, token) {
   if (!messageId) return;

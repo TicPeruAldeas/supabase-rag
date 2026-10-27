@@ -30,9 +30,9 @@ IDIOMA DE RESPOSTA (OBRIGATÓRIO): Responda SEMPRE em português do Brasil (pt-B
 // ── Agente de PRUEBA (XT) ─────────────────────────────────────
 // XT es el país de pruebas: se presenta como Perú y responde en mensajes cortos
 // con viñetas, y su saludo lista las categorías de su base de conocimiento.
-// PE, CO y BR NO cambian: para ellos la directiva de formato es "" y los textos
-// son los de siempre.
-const RICH_FORMAT_COUNTRIES = new Set(["XT"]);
+// Desde oct. 2026 PE usa lo mismo que XT. CO y BR NO cambian: para ellos la
+// directiva de formato es "" y los textos son los de siempre.
+const RICH_FORMAT_COUNTRIES = new Set(["XT", "PE"]);
 
 function usesRichFormat(countryCode) {
   return RICH_FORMAT_COUNTRIES.has(String(countryCode || "").toUpperCase());
@@ -158,23 +158,36 @@ const XT_TOPICS = [
 ].join("\n");
 const XT_TOPICS_CLOSING = "Escríbelo con tus propias palabras, sin preocuparte por cómo lo digas 💙";
 
-const COUNTRY_STRINGS = {
-  XT: {
+// PE usa los mismos textos que XT, con los temas de su matriz (V4, oct. 2026).
+const PE_TOPICS = [
+  "• *Documentación y situación migratoria:* papeles, carné de extranjería, multas, trámites de tus hijos",
+  "• *Protección de niñas, niños y adolescentes:* violencia, abuso, separación familiar, crianza",
+  "• *Acceso a derechos:* salud, colegio, trabajo, discapacidad, alimentación",
+].join("\n");
+
+// Textos del "agente Perú Multipaís". Temas escritos a mano (con ejemplos), no
+// tomados de las categorías del Excel: si se agrega una categoría nueva, hay
+// que añadirla en la lista de temas del país.
+function peruAgentStrings(topics) {
+  return {
     consentText: (userName) => {
       const saludo = userName ? `¡Hola, ${userName}! 👋` : "¡Hola! 👋";
       return `${saludo} Bienvenido/a 😊. Soy el agente Perú Multipaís de Aldeas Infantiles SOS. Estoy aquí para orientarte sobre documentos, tus derechos y la protección de tus hijos, sin importar tu situación migratoria. *Todo lo que me cuentes es confidencial.*\n\nPresiona "Continuar" y empecemos 👇`;
     },
-    // Temas escritos a mano (con ejemplos), no tomados de las categorías del
-    // Excel: si se agrega una categoría nueva, hay que añadirla en XT_TOPICS.
     welcome: (userName) => {
       const saludo = userName ? `¡Gracias, ${userName}! 😊` : "¡Gracias! 😊";
-      return `${saludo} Cuéntame qué necesitas. Puedo orientarte sobre:\n\n${XT_TOPICS}\n\n${XT_TOPICS_CLOSING}`;
+      return `${saludo} Cuéntame qué necesitas. Puedo orientarte sobre:\n\n${topics}\n\n${XT_TOPICS_CLOSING}`;
     },
-    smallTalk: () => `¡Hola! 😊 Soy el agente Perú Multipaís de Aldeas Infantiles SOS. Cuéntame qué necesitas. Puedo orientarte sobre:\n\n${XT_TOPICS}\n\n${XT_TOPICS_CLOSING}`,
+    smallTalk: () => `¡Hola! 😊 Soy el agente Perú Multipaís de Aldeas Infantiles SOS. Cuéntame qué necesitas. Puedo orientarte sobre:\n\n${topics}\n\n${XT_TOPICS_CLOSING}`,
     // Sin lista de temas: los temas se muestran solo en el saludo y la
     // bienvenida, no cada vez que una pregunta no encuentra respuesta.
     fallbackNoExcel: (org) => `Gracias por contarme. No tengo una orientación precisa sobre eso por aquí. Te recomiendo comunicarte por los canales oficiales de ${org} para que puedan ayudarte con tu caso.`,
-  },
+  };
+}
+
+const COUNTRY_STRINGS = {
+  XT: peruAgentStrings(XT_TOPICS),
+  PE: peruAgentStrings(PE_TOPICS),
 };
 
 // ── Agente de PRUEBA (XT) en portugués ────────────────────────
