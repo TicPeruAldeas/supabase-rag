@@ -1090,6 +1090,16 @@ ${candidateText}`,
 // Columna "Datos" (contactos complementarios): viaja dentro de `answer` bajo una
 // sección etiquetada; ver datos-text.js.
 const { splitDatos, mergeDatos, DATOS_HEADER } = require("./datos-text");
+const { phasePositions, stepLabel, phaseTitle } = require("./step-parser");
+
+// Fases del proceso a partir de los pasos tal como vienen de la base o ya
+// normalizados ({number, detail}).
+function stepPhases(allSteps) {
+  return phasePositions((allSteps || []).map(s => ({
+    number: s.number ?? s.step_number,
+    text: s.detail ?? s.step_detail,
+  })));
+}
 
 async function getFlowById(countryCode, flowId) {
   const { data, error } = await supabase
@@ -1212,9 +1222,14 @@ async function presentStepWithLLM(stepContent, { isDetail, isLastStep, question,
     const steps = (allSteps || []).map(s => ({
       number: s.number ?? s.step_number,
       summary: s.summary ?? s.step_summary,
+      detail: s.detail ?? s.step_detail,
     }));
 
     const isInitialPresentation = !isDetail && currentStepNumber === 1 && steps.length > 0;
+    // Con fases, el paso se cuenta dentro de su fase ("Paso 1 de 3"), no en el total.
+    const phases = stepPhases(steps);
+    const label = stepLabel(currentStepNumber, steps.length, phases);
+    const shortLabel = phases ? label : `Paso ${currentStepNumber ?? ''}`;
 
     let systemText;
     let userTask;
@@ -1223,13 +1238,13 @@ async function presentStepWithLLM(stepContent, { isDetail, isLastStep, question,
       systemText = `Organización: ${orgName}. País: ${countryCode}.
 Eres un asistente de WhatsApp que entrega información de forma progresiva, un paso a la vez.
 
-DETALLE DEL PASO 1 DE ${steps.length} (fuente Excel — reformular, no copiar literalmente):
+DETALLE DEL ${label.toUpperCase()} (fuente Excel — reformular, no copiar literalmente):
 ${stepContent}
 
 Genera la respuesta con EXACTAMENTE este formato:
 "[Breve frase de contexto si aplica].
 
-Paso 1 de ${steps.length}:
+${label}:
 [Explicación breve del Paso 1 en lenguaje simple para WhatsApp].
 
 ¿Quieres que te diga el siguiente paso?"
@@ -1261,7 +1276,7 @@ REGLAS:
       systemText = `Organización: ${orgName}. País: ${countryCode}.
 Eres un asistente de WhatsApp guiando al usuario en el Paso ${currentStepNumber ?? ''}.
 REGLAS:
-- Comienza indicando el número: "Paso ${currentStepNumber ?? ''}: ..."
+- Comienza indicando el número: "${shortLabel}: ..."
 - Reformula el contenido brevemente, sin copiar literalmente
 - No cambies datos concretos (direcciones, teléfonos, requisitos, instituciones)
 - No agregues información fuera del texto
@@ -1273,7 +1288,10 @@ REGLAS:
     // Pasos agrupados en fases (ver step-parser.js): el primer paso de cada fase
     // empieza con "Fase X de Y — Nombre." y la fase se anuncia antes del paso.
     if (!isDetail && /^Fase \d+ de \d+/.test(String(stepContent || "").trim())) {
-      systemText += `\n\nEste paso INICIA UNA FASE del proceso. Antes del número de paso escribe la fase en su propia línea, tal como aparece al inicio del contenido (por ejemplo: "*Fase 2 de 3: Presenta tu solicitud*"), y luego continúa con el paso.${isInitialPresentation ? ` Esto también aplica al formato indicado arriba: la línea de la fase va justo antes de "Paso 1 de ${steps.length}:".` : ""}`;
+      systemText += `\n\nEste paso INICIA UNA FASE del proceso. Antes del número de paso escribe la fase en su propia línea, tal como aparece al inicio del contenido (por ejemplo: "*Fase 2 de 3: Presenta tu solicitud*"), y luego continúa con el paso.${isInitialPresentation ? ` Esto también aplica al formato indicado arriba: la línea de la fase va justo antes de "${label}:".` : ""}`;
+    }
+    if (phases && !isDetail) {
+      systemText += `\n\nEl proceso está dividido en fases y los pasos se cuentan dentro de cada fase: este es el ${label} de la ${phaseTitle(phases.get(currentStepNumber) || { phase: "", totalPhases: "" })}. Usa siempre esa numeración ("${label}"), nunca el número total de pasos del proceso.`;
     }
 
     // Datos de contacto del flow (columna "Datos"): complementarios a los pasos.
@@ -1334,8 +1352,15 @@ function formatAllStepsFallback(allSteps, countryCode, userText = null) {
   const steps = (allSteps || []).map(s => ({
     number: s.number ?? s.step_number,
     summary: s.summary ?? s.step_summary,
+    detail: s.detail ?? s.step_detail,
   }));
-  const lines = steps.map(s => `${s.number}. ${firstSentence(s.summary)}`);
+  // Con fases: un título por fase y la numeración vuelve a empezar en cada una.
+  const phases = stepPhases(steps);
+  const lines = steps.map(s => {
+    const p = phases && phases.get(s.number);
+    const line = `${p ? p.local : s.number}. ${firstSentence(s.summary)}`;
+    return p && p.local === 1 ? `${s.number === steps[0].number ? "" : "\n"}*${phaseTitle(p)}*\n${line}` : line;
+  });
   const t = strings(countryCode, userText);
   return `${t.allStepsIntro(steps.length)}\n\n${lines.join("\n")}\n\n${t.allStepsOutro()}`;
 }
@@ -1346,9 +1371,13 @@ async function presentAllStepsWithLLM(allSteps, { orgName, countryCode, datos, u
   const steps = (allSteps || []).map(s => ({
     number: s.number ?? s.step_number,
     summary: s.summary ?? s.step_summary,
+    detail: s.detail ?? s.step_detail,
   }));
   const fallback = formatAllStepsFallback(steps, countryCode, userText);
   if (!steps.length) return fallback;
+  // Con fases se usa la lista determinista: agrupa por fase y numera dentro de
+  // cada una, cosa que el formato de abajo (1..N seguidos) no permite.
+  if (stepPhases(steps)) return fallback;
 
   return startActiveObservation("claude-all-steps-summary", async (obs) => {
     obs.update({ input: { total: steps.length } });
@@ -1445,7 +1474,16 @@ async function handlePasoAPaso(userId, countryCode, question, state) {
     }
 
     // Resumen de todos los pasos + detalle completo solo del actual y el siguiente
-    const stepsOverview = allSteps.map(s => `[${s.step_number}] ${s.step_summary}`).join("\n");
+    // Con fases, cada paso se presenta con su número dentro de la fase.
+    const phases = stepPhases(allSteps);
+    const stepsOverview = allSteps.map(s => {
+      const p = phases && phases.get(s.step_number);
+      return `[${s.step_number}]${p ? ` (${phaseTitle(p)}, ${stepLabel(s.step_number, 0, phases)})` : ""} ${s.step_summary}`;
+    }).join("\n");
+    const nextPhase = phases && phases.get(state.current_step + 1);
+    const nextLabel = stepLabel(state.current_step + 1, state.total_steps, phases);
+    const nextHeader = nextPhase && nextPhase.local === 1 ? `*${phaseTitle(nextPhase)}*\n` : "";
+    const nextQuestion = phases ? "¿Quieres que te diga el siguiente paso?" : `¿Quieres que te diga el paso ${state.current_step + 2}?`;
     const currentContent = currentStep.step_detail || currentStep.step_summary;
     const nextContent = followingStep ? (followingStep.step_detail || followingStep.step_summary) : null;
 
@@ -1523,7 +1561,7 @@ Responde ÚNICAMENTE con JSON válido (sin texto fuera del JSON):
 {"accion": "siguiente|todos|detalle|finalizar|otro", "respuesta": "..."}
 
 REGLAS para el campo "respuesta":
-- Al avanzar, SIEMPRE usar el formato: "Paso ${state.current_step + 1} de ${state.total_steps}:\n[explicación breve].\n\n¿Quieres que te diga el paso ${state.current_step + 2}?"
+- Al avanzar, SIEMPRE usar el formato: "${nextHeader}${nextLabel}:\n[explicación breve].\n\n${nextQuestion}"${phases ? "\n- El proceso está dividido en fases y los pasos se cuentan dentro de cada fase (ver RESUMEN); nunca uses el número total de pasos del proceso" : ""}
 - Si accion es "todos", listar TODOS los pasos con "Paso X de ${state.total_steps}: [resumen breve]" y cerrar con "¿Tienes alguna duda sobre alguno de ellos?"
 - Un solo paso por mensaje (salvo accion "todos")
 - Reformular el contenido del Excel en lenguaje simple; no copiar literalmente

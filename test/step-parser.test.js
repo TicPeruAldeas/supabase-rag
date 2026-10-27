@@ -60,3 +60,20 @@ test("sin pasos numerados devuelve una lista vacía", () => {
   assert.deepStrictEqual(parseSteps("Solo texto informativo."), []);
   assert.deepStrictEqual(parseSteps(""), []);
 });
+
+test("con fases: cada paso se cuenta dentro de su fase (3 + 2 + 2, no 7)", () => {
+  const { phasePositions, stepLabel, phaseTitle } = require("../step-parser");
+  const phases = phasePositions(parseSteps(MULTA));
+  assert.strictEqual(stepLabel(1, 7, phases), "Paso 1 de 3");
+  assert.strictEqual(stepLabel(3, 7, phases), "Paso 3 de 3");
+  assert.strictEqual(stepLabel(4, 7, phases), "Paso 1 de 2");
+  assert.strictEqual(stepLabel(7, 7, phases), "Paso 2 de 2");
+  assert.strictEqual(phaseTitle(phases.get(4)), "Fase 2 de 3: Presenta tu solicitud");
+});
+
+test("sin fases: la numeración sigue siendo sobre el total", () => {
+  const { phasePositions, stepLabel } = require("../step-parser");
+  const phases = phasePositions(parseSteps("1. Reúne tus documentos.\n2. Paga la tasa."));
+  assert.strictEqual(phases, null);
+  assert.strictEqual(stepLabel(2, 2, phases), "Paso 2 de 2");
+});

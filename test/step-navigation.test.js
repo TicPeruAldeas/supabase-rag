@@ -95,3 +95,18 @@ test("formatAllStepsFallback: lista enumerada, ordenada y resumida a una frase p
   assert.ok(l3 && l3.length <= 115, l3);
   assert.ok(out.trim().endsWith("Dime el número del paso."), out);
 });
+
+test("formatAllStepsFallback con fases: un título por fase y numeración dentro de cada una", () => {
+  const steps = [
+    { step_number: 1, step_summary: "Pregunta cuántos días de multa tienes.", step_detail: "Fase 1 de 2 — Pagos. Pregunta cuántos días." },
+    { step_number: 2, step_summary: "Paga la multa.", step_detail: "Paga la multa." },
+    { step_number: 3, step_summary: "Entra a la Agencia Digital.", step_detail: "Fase 2 de 2 — Presenta tu solicitud. Entra." },
+  ];
+  const lines = formatAllStepsFallback(steps, "XT").split("\n");
+  const i = lines.indexOf("*Fase 1 de 2: Pagos*");
+  assert.ok(i > 0);
+  assert.strictEqual(lines[i + 1], "1. Pregunta cuántos días de multa tienes.");
+  assert.strictEqual(lines[i + 2], "2. Paga la multa.");
+  const j = lines.indexOf("*Fase 2 de 2: Presenta tu solicitud*");
+  assert.strictEqual(lines[j + 1], "1. Entra a la Agencia Digital.");
+});

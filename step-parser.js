@@ -51,4 +51,39 @@ function parseSteps(text) {
   return steps.map((s, i) => ({ number: i + 1, text: s.text }));
 }
 
-module.exports = { parseSteps };
+// Posición de cada paso dentro de su fase, leída del detalle guardado (el primer
+// paso de cada fase empieza con "Fase X de Y — Nombre."). Recibe [{number, text}]
+// y devuelve un Map number → {phase, totalPhases, name, local, localTotal}, o
+// null si el proceso no tiene fases.
+const PHASE_START = /^Fase (\d+) de (\d+)(?: — ([^.]*))?\./;
+
+function phasePositions(steps) {
+  const sorted = [...(steps || [])].sort((a, b) => a.number - b.number);
+  if (!sorted.length || !PHASE_START.test(String(sorted[0].text || "").trim())) return null;
+  const groups = [];
+  for (const s of sorted) {
+    const m = String(s.text || "").trim().match(PHASE_START);
+    if (m) groups.push({ phase: Number(m[1]), totalPhases: Number(m[2]), name: (m[3] || "").trim(), numbers: [] });
+    groups[groups.length - 1].numbers.push(s.number);
+  }
+  const positions = new Map();
+  for (const g of groups) {
+    g.numbers.forEach((n, i) => positions.set(n, {
+      phase: g.phase, totalPhases: g.totalPhases, name: g.name, local: i + 1, localTotal: g.numbers.length,
+    }));
+  }
+  return positions;
+}
+
+// "Paso 2 de 3" (dentro de su fase) o "Paso 5 de 9" si el proceso no tiene fases.
+function stepLabel(number, total, phases) {
+  const p = phases && phases.get(number);
+  return p ? `Paso ${p.local} de ${p.localTotal}` : `Paso ${number} de ${total}`;
+}
+
+// "Fase 1 de 3: Pagos"
+function phaseTitle(p) {
+  return `Fase ${p.phase} de ${p.totalPhases}${p.name ? `: ${p.name}` : ""}`;
+}
+
+module.exports = { parseSteps, phasePositions, stepLabel, phaseTitle };
