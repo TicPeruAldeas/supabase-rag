@@ -144,7 +144,8 @@ test("XT y PE piden lenguaje claro", () => {
 
 test("XT y PE: respuestas cortas y claras; CO y BR sin cambios", () => {
   assert.match(langDirective("XT"), /RESPUESTA CORTA Y CLARA/);
-  assert.match(langDirective("XT"), /Máximo 50 palabras/);
+  assert.ok(langDirective("XT").includes('Máximo 40 palabras en total. Si presentas un paso ("Paso X de N"), hasta 65 palabras.'));
+  assert.ok(langDirective("PE").includes('Máximo 50 palabras en total. Si presentas un paso ("Paso X de N"), hasta 80 palabras.'));
   for (const cc of ["CO", "BR"]) assert.doesNotMatch(langDirective(cc), /RESPUESTA CORTA/);
 });
 
@@ -168,7 +169,7 @@ test("PE: mismas funciones que XT, con los temas de su matriz", () => {
   assert.strictEqual(usesRichFormat("PE"), true);
   assert.strictEqual(usesReexplain("PE"), true);
   assert.deepStrictEqual(rerankModelParams("PE"), rerankModelParams("XT"));
-  assert.strictEqual(langDirective("PE"), langDirective("XT"));
+  assert.strictEqual(langDirective("PE").replace(/\d+ palabras/g, ""), langDirective("XT").replace(/\d+ palabras/g, "")); // solo cambia el largo
   assert.match(strings("PE").consentText("Ana"), /^¡Hola, Ana! 👋 Bienvenido\/a 😊\. Soy el Agente Perú Multipaís de Aldeas Infantiles SOS\./);
   const welcome = strings("PE").welcome("Ana");
   assert.match(welcome, /📄 \*Regularización y documentación:\* documentos, multas y trámites de tus hijos/);

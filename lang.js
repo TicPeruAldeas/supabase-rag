@@ -40,7 +40,12 @@ function usesRichFormat(countryCode) {
 
 // Se anexa (junto a la directiva de idioma) al final de cada prompt de
 // generación, así que tiene prioridad sobre "máximo 4 líneas / sin listas".
-const RICH_FORMAT_DIRECTIVE = `
+// Largo máximo de la respuesta por país (palabras; y en un paso del paso a paso).
+// XT (agente de prueba) responde un poco más corto que PE.
+const MAX_WORDS = { XT: [40, 65] };
+const DEFAULT_MAX_WORDS = [50, 80];
+
+const richFormatDirective = ([maxWords, maxStepWords]) => `
 
 FORMATO DE RESPUESTA PARA WHATSAPP (OBLIGATORIO; reemplaza cualquier indicación anterior de "sin listas", "sin viñetas" o "máximo 4 líneas"):
 - Empieza con UNA frase corta que responda o enmarque la consulta.
@@ -58,7 +63,7 @@ LENGUAJE CLARO (OBLIGATORIO): escribe para que te entienda cualquier persona, au
 - Habla de forma directa y cercana (tú), sin tecnicismos innecesarios ni siglas sin explicar.
 
 RESPUESTA CORTA Y CLARA (OBLIGATORIO; tiene prioridad sobre cualquier indicación anterior de formato o extensión, incluidas las viñetas):
-- Máximo 50 palabras en total. Si presentas un paso ("Paso X de N"), hasta 80 palabras.
+- Máximo ${maxWords} palabras en total. Si presentas un paso ("Paso X de N"), hasta ${maxStepWords} palabras.
 - Escribe 2 o 3 párrafos muy cortos (una o dos frases cada uno). NO uses viñetas, salvo cuando la persona deba elegir entre opciones (por ejemplo, "¿cuál es tu caso?").
 - El primer párrafo responde directo a lo que preguntó. Incluye solo lo más importante para SU caso; el resto lo contarás si lo pide.
 - Que se entienda a la primera, como si hablaras con alguien que no conoce los trámites: nunca uses siglas ni palabras legales sin explicarlas. Por ejemplo, di "sin papeles en regla" y no "situación irregular"; "permiso para vivir aquí" y no "calidad migratoria"; "CPP (permiso temporal de permanencia)" y no solo "CPP".
@@ -81,7 +86,8 @@ const AUTO_LANG_DIRECTIVE = `
 IDIOMA DE RESPUESTA (OBLIGATORIO): Responde en el MISMO idioma del ÚLTIMO mensaje del usuario. Si escribe en portugués, responde en portugués de Brasil; si escribe en español, responde en español. El contenido de la fuente está en español: tradúcelo con naturalidad, pero NO traduzcas ni cambies nombres propios, nombres de instituciones u organismos, siglas, teléfonos, correos ni enlaces: cópialos exactamente como aparecen en la fuente. Traduce también las frases fijas de formato y las preguntas de cierre que te indiquen las instrucciones (por ejemplo, en portugués "Paso 1 de 5:" se escribe "Passo 1 de 5:" y "¿Quieres que te diga el siguiente paso?" se escribe "Quer que eu te diga o próximo passo?"), sin mezclar idiomas en la misma respuesta. Si la respuesta debe ser un JSON, mantén las claves y los valores de control (como "accion") exactamente como se piden y aplica el idioma solo al texto para el usuario. Esta instrucción anula cualquier indicación anterior de responder siempre en español.`;
 
 function langDirective(countryCode) {
-  const format = usesRichFormat(countryCode) ? RICH_FORMAT_DIRECTIVE : "";
+  const cc = String(countryCode || "").toUpperCase();
+  const format = usesRichFormat(cc) ? richFormatDirective(MAX_WORDS[cc] || DEFAULT_MAX_WORDS) : "";
   const lang = usesAutoLanguage(countryCode) ? AUTO_LANG_DIRECTIVE : (LANG_DIRECTIVE[getLang(countryCode)] || "");
   return lang + format;
 }
