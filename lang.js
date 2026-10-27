@@ -161,9 +161,9 @@ const XT_TOPICS_CLOSING = "Escríbelo con tus propias palabras, sin preocuparte 
 // PE usa los mismos textos que XT, con las 3 categorías de su matriz (V4, oct.
 // 2026) con sus mismos nombres; los ejemplos son solo lo que la matriz responde.
 const PE_TOPICS = [
-  "📄 *Regularización y documentación:* qué documento te corresponde, cómo regularizarte, multas, renovar tu carné y trámites de tus hijos",
-  "🛡️ *Protección infantil y familiar:* dónde pedir ayuda, cómo denunciar violencia o abuso, separación familiar y el bienestar de tus hijos",
-  "🤝 *Acceso a derechos:* trabajo, alimentación, salud, colegio y apoyo por discapacidad",
+  "📄 *Regularización y documentación:* documentos, multas y trámites de tus hijos",
+  "🛡️ *Protección infantil y familiar:* violencia, abuso y separación familiar",
+  "🤝 *Acceso a derechos:* trabajo, alimentación, salud, colegio y discapacidad",
 ].join("\n");
 
 // Textos del "Agente Perú Multipaís". Temas escritos a mano (con ejemplos), no
