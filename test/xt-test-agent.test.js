@@ -171,8 +171,9 @@ test("PE: mismas funciones que XT, con los temas de su matriz", () => {
   assert.strictEqual(langDirective("PE"), langDirective("XT"));
   assert.match(strings("PE").consentText("Ana"), /^¡Hola, Ana! 👋 Bienvenido\/a 😊\. Soy el agente Perú Multipaís de Aldeas Infantiles SOS\./);
   const welcome = strings("PE").welcome("Ana");
-  assert.match(welcome, /• \*Documentación y situación migratoria:\* papeles, carné de extranjería, multas, trámites de tus hijos/);
-  assert.match(welcome, /• \*Acceso a derechos:\* salud, colegio, trabajo, discapacidad, alimentación/);
-  assert.match(strings("PE").smallTalk("Org"), /separación familiar, crianza/);
+  assert.match(welcome, /📄 \*Regularización y documentación:\* qué documento te corresponde/);
+  assert.match(welcome, /🛡️ \*Protección infantil y familiar:\* dónde pedir ayuda, cómo denunciar violencia o abuso, separación familiar y el bienestar de tus hijos/);
+  assert.match(welcome, /🤝 \*Acceso a derechos:\* trabajo, alimentación, salud, colegio y apoyo por discapacidad/);
+  assert.doesNotMatch(strings("PE").smallTalk("Org"), /crianza/); // la matriz no tiene una sección de crianza
   assert.doesNotMatch(welcome, /banco, vivienda/); // temas de XT, no de PE
 });
