@@ -51,6 +51,7 @@ if (META_APP_SECRETS.length === 0) {
 
 // Columna "Datos" (contactos) de la base de conocimiento: ver datos-text.js.
 const { mergeDatos } = require("./datos-text");
+const { parseSteps } = require("./step-parser");
 
 const app = express();
 // Guardamos el cuerpo crudo para poder verificar el HMAC de Meta byte a byte.
@@ -293,20 +294,7 @@ async function sendConsentCard(to, userName, phoneNumberId, token, countryCode, 
 // el timeout del webhook (Make): cada paso requiere una llamada a Claude.
 // Los resúmenes se generan en paralelo para minimizar la latencia total.
 async function processStepsInBackground(flowId, answer, countryCode) {
-  const lines = answer.split("\n").map((l) => l.trim()).filter(Boolean);
-  const steps = [];
-  let currentStep = null;
-
-  for (const line of lines) {
-    const match = line.match(/^(\d+)\.\s+(.+)/);
-    if (match) {
-      if (currentStep) steps.push(currentStep);
-      currentStep = { number: parseInt(match[1]), text: match[2] };
-    } else if (currentStep) {
-      currentStep.text += " " + line;
-    }
-  }
-  if (currentStep) steps.push(currentStep);
+  const steps = parseSteps(answer);
   if (steps.length === 0) return;
 
   await supabase

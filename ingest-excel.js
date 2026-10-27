@@ -9,6 +9,7 @@ const fs = require("fs");
 const { buildFlowEmbeddingInput } = require("./embedding-text");
 const { stepSummarySystem } = require("./lang");
 const { mergeDatos } = require("./datos-text");
+const { parseSteps } = require("./step-parser");
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -29,24 +30,6 @@ const FILE_PATH = process.argv[3] || "./Plantilla_Nueva.xlsx";
 // otro país (PE-CT…) chocaría con él; con prefijo quedan únicos. Vacío = sin prefijo.
 const ID_PREFIX = process.argv[4] || "";
 
-// ── Parsear pasos de una celda ────────────────────────────────
-function parseSteps(text) {
-  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
-  const steps = [];
-  let currentStep = null;
-
-  for (const line of lines) {
-    const match = line.match(/^(\d+)\.\s+(.+)/);
-    if (match) {
-      if (currentStep) steps.push(currentStep);
-      currentStep = { number: parseInt(match[1]), text: match[2] };
-    } else if (currentStep) {
-      currentStep.text += " " + line;
-    }
-  }
-  if (currentStep) steps.push(currentStep);
-  return steps;
-}
 
 // ── Generar resumen corto de un paso con IA ───────────────────
 async function generateStepSummary(stepText, stepNumber, totalSteps) {

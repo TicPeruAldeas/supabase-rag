@@ -1270,6 +1270,12 @@ REGLAS:
       userTask = `Contenido del Paso ${currentStepNumber ?? ''}:\n${stepContent}`;
     }
 
+    // Pasos agrupados en fases (ver step-parser.js): el primer paso de cada fase
+    // empieza con "Fase X de Y — Nombre." y la fase se anuncia antes del paso.
+    if (!isDetail && /^Fase \d+ de \d+/.test(String(stepContent || "").trim())) {
+      systemText += `\n\nEste paso INICIA UNA FASE del proceso. Antes del número de paso escribe la fase en su propia línea, tal como aparece al inicio del contenido (por ejemplo: "*Fase 2 de 3: Presenta tu solicitud*"), y luego continúa con el paso.${isInitialPresentation ? ` Esto también aplica al formato indicado arriba: la línea de la fase va justo antes de "Paso 1 de ${steps.length}:".` : ""}`;
+    }
+
     // Datos de contacto del flow (columna "Datos"): complementarios a los pasos.
     // El modelo solo los entrega si el usuario los pide o si son útiles para el
     // paso; y el guardrail debe reconocerlos como fuente legítima (si no, un
@@ -2344,7 +2350,7 @@ async function askAI(userId, countryCode, question, options = {}) {
           if ((normalizedType === "paso a paso" || normalizedType === "paso_a_paso") && !flow.reused_last_topic && !contactRequest) {
             const { data: steps } = await supabase
               .from("knowledge_steps")
-              .select("step_number, step_summary")
+              .select("step_number, step_summary, step_detail")
               .eq("flow_id", flow.flow_id)
               .eq("country_code", countryCode)
               .order("step_number", { ascending: true });
@@ -2361,7 +2367,10 @@ async function askAI(userId, countryCode, question, options = {}) {
 
             await upsertState(userId, countryCode, flow.flow_id, "paso a paso", 1, steps.length);
             traceMetrics.total_steps = steps.length;
-            const response = await presentStepWithLLM(steps[0].step_summary, {
+            // El resumen IA no conserva la fase; se toma del detalle del paso 1.
+            const firstPhase = String(steps[0].step_detail || "").match(/^Fase \d+ de \d+[^.]*\./);
+            const firstContent = firstPhase ? `${firstPhase[0]} ${steps[0].step_summary}` : steps[0].step_summary;
+            const response = await presentStepWithLLM(firstContent, {
               isDetail: false, isLastStep: steps.length === 1,
               question, history, orgName, countryCode,
               allSteps: steps, currentStepNumber: 1,
