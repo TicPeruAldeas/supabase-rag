@@ -178,3 +178,15 @@ test("PE: mismas funciones que XT, con los temas de su matriz", () => {
   assert.doesNotMatch(strings("PE").smallTalk("Org"), /crianza/); // la matriz no tiene una sección de crianza
   assert.doesNotMatch(welcome, /banco, vivienda/); // temas de XT, no de PE
 });
+
+test("PE: sin información no deriva a la organización y recuerda sus temas; XT no cambia", () => {
+  const pe = strings("PE").fallbackNoExcel("Aldeas Infantiles SOS Perú");
+  assert.match(pe, /^Entiendo lo que necesitas 💙, pero sobre ese tema no tengo información por ahora\./);
+  assert.match(pe, /documentos, la protección de tus hijos y el acceso a salud, colegio, trabajo y alimentación/);
+  assert.doesNotMatch(pe, /canales oficiales|Aldeas/);
+  assert.match(strings("XT").fallbackNoExcel("Org"), /canales oficiales de Org/);
+});
+
+test("PE tiene mensaje de despedida por inactividad", () => {
+  assert.match(strings("PE").inactivityFarewell(), /^Parece que ya no estás por aquí 😊\. Fue un gusto ayudarte\./);
+});

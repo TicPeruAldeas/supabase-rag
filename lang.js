@@ -194,7 +194,14 @@ function peruAgentStrings(topics) {
 
 const COUNTRY_STRINGS = {
   XT: peruAgentStrings(XT_TOPICS),
-  PE: peruAgentStrings(PE_TOPICS),
+  PE: {
+    ...peruAgentStrings(PE_TOPICS),
+    // Sin derivar a la organización: lo que no está en la matriz (alquiler,
+    // préstamos...) no es algo en lo que Aldeas pueda ayudar.
+    fallbackNoExcel: () => `Entiendo lo que necesitas 💙, pero sobre ese tema no tengo información por ahora.\n\nDonde sí puedo orientarte es en tus documentos, la protección de tus hijos y el acceso a salud, colegio, trabajo y alimentación. ¿Te ayudo con alguno de esos temas?`,
+    // Se envía tras unos minutos sin respuesta de la persona (ver server.js).
+    inactivityFarewell: () => `Parece que ya no estás por aquí 😊. Fue un gusto ayudarte.\n\nSi tienes otra consulta, escríbeme cuando quieras; estaré aquí para orientarte 💙`,
+  },
 };
 
 // ── Agente de PRUEBA (XT) en portugués ────────────────────────

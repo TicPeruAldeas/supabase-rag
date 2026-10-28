@@ -30,6 +30,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const express = require("express");
 const { askAI, saveConversationTurn, buildTopicsMenu } = require("./rag-service");
 const { strings, stepSummarySystem } = require("./lang");
+const { createInactivityTimers } = require("./inactivity");
 
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 
@@ -393,6 +394,30 @@ async function sendTypingIndicator(messageId, phoneNumberId, token) {
   }
 }
 
+// Despedida automática: si la persona deja de escribir durante 6 minutos tras
+// una respuesta del agente, se le envía un mensaje de cierre (una sola vez; cada
+// mensaje nuevo reinicia la cuenta). No se envía si el agente ya se despidió.
+// Por ahora solo en PE.
+const FAREWELL_COUNTRIES = new Set(["PE"]);
+const INACTIVITY_FAREWELL_MS = 6 * 60 * 1000;
+
+const inactivityTimers = createInactivityTimers(INACTIVITY_FAREWELL_MS, (key, ctx) =>
+  runSerialized(key, async () => {
+    const message = strings(ctx.countryCode).inactivityFarewell();
+    await sendWhatsAppMessage(ctx.from, message, ctx.phoneNumberId, ctx.token);
+    await saveConversationTurn({
+      userId: ctx.from, countryCode: ctx.countryCode, role: "assistant", message, source: "whatsapp",
+      metadata: { event: "inactivity_farewell", phone_number_id: ctx.incomingPhoneNumberId },
+    }).catch((err) => console.error("Error guardando despedida:", err.message));
+    console.log(`👋 [${ctx.countryCode}] ${ctx.from} — despedida por inactividad`);
+  })
+);
+
+function scheduleFarewell(ctx) {
+  if (!FAREWELL_COUNTRIES.has(ctx.countryCode)) return;
+  inactivityTimers.schedule(`${ctx.countryCode}:${ctx.from}`, ctx);
+}
+
 // Procesa un mensaje entrante completo: guarda turno, consulta RAG, responde y
 // guarda la respuesta. Los `await` de guardado mantienen el orden cronológico en
 // la BD para que el historial del siguiente mensaje sea consistente.
@@ -424,6 +449,9 @@ async function handleIncomingMessage({ from, text, countryCode, phoneNumberId, t
 
     await sendWhatsAppMessage(from, result.response, phoneNumberId, token);
     console.log(`✅ [${countryCode}] ${from} → ${result.metadata?.search_type} ${result.metadata?.total_ms}ms`);
+    if (result.metadata?.search_type !== "closing") {
+      scheduleFarewell({ from, countryCode, phoneNumberId, token, incomingPhoneNumberId });
+    }
 
     await saveConversationTurn({
       userId: from,
@@ -482,6 +510,7 @@ async function handleConsentGate({ from, text, buttonId, userName, countryCode, 
       const langText = text || recallConsentText(countryCode, from);
       const welcome = strings(countryCode, langText).welcome(userName, topics);
       await sendWhatsAppMessage(from, welcome, phoneNumberId, token);
+      scheduleFarewell({ from, countryCode, phoneNumberId, token, incomingPhoneNumberId });
       await saveConversationTurn({
         userId: from, countryCode, role: "assistant", message: welcome, source: "whatsapp",
         metadata: { event: "consent_welcome", phone_number_id: incomingPhoneNumberId },
@@ -581,6 +610,9 @@ app.post("/webhook", (req, res) => {
     console.log(`⏭️  Mensaje duplicado ignorado: ${message.id}`);
     return;
   }
+
+  // La persona volvió a escribir: ya no corresponde la despedida pendiente.
+  inactivityTimers.cancel(`${countryCode}:${from}`);
 
   // Serializa por usuario: los mensajes del mismo número se procesan en orden.
   runSerialized(`${countryCode}:${from}`, () =>
