@@ -28,7 +28,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const express = require("express");
-const { askAI, saveConversationTurn, buildTopicsMenu } = require("./rag-service");
+const { askAI, saveConversationTurn, buildTopicsMenu, getActiveState } = require("./rag-service");
 const { strings, stepSummarySystem } = require("./lang");
 const { createInactivityTimers } = require("./inactivity");
 
@@ -394,15 +394,28 @@ async function sendTypingIndicator(messageId, phoneNumberId, token) {
   }
 }
 
-// Despedida automática: si la persona deja de escribir durante 6 minutos tras
+// Despedida automática: si la persona deja de escribir durante 10 minutos tras
 // una respuesta del agente, se le envía un mensaje de cierre (una sola vez; cada
-// mensaje nuevo reinicia la cuenta). No se envía si el agente ya se despidió.
-// Por ahora solo en PE.
+// mensaje nuevo reinicia la cuenta). No se envía si el agente ya se despidió ni
+// a mitad de un paso a paso (puede estar haciendo el trámite). Solo en PE.
 const FAREWELL_COUNTRIES = new Set(["PE"]);
-const INACTIVITY_FAREWELL_MS = 6 * 60 * 1000;
+const INACTIVITY_FAREWELL_MS = 10 * 60 * 1000;
+
+// ¿La última respuesta avanzó un paso a paso que sigue abierto? Un flujo activo
+// pero sin movimiento reciente (la persona cambió de tema) no cuenta.
+async function isMidStepFlow(from, countryCode) {
+  const state = await getActiveState(from, countryCode);
+  if (!state) return false;
+  const idleMs = Date.now() - new Date(state.updated_at).getTime();
+  return idleMs <= INACTIVITY_FAREWELL_MS + 2 * 60 * 1000;
+}
 
 const inactivityTimers = createInactivityTimers(INACTIVITY_FAREWELL_MS, (key, ctx) =>
   runSerialized(key, async () => {
+    if (await isMidStepFlow(ctx.from, ctx.countryCode)) {
+      console.log(`⏸️  [${ctx.countryCode}] ${ctx.from} — sin despedida: está a mitad de un paso a paso`);
+      return;
+    }
     const message = strings(ctx.countryCode).inactivityFarewell();
     await sendWhatsAppMessage(ctx.from, message, ctx.phoneNumberId, ctx.token);
     await saveConversationTurn({

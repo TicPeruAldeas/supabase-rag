@@ -2477,6 +2477,8 @@ module.exports = {
   saveConversationTurn,
   // Menú de temas para la bienvenida tras el consentimiento (server.js).
   buildTopicsMenu,
+  // Paso a paso en curso (server.js: no despedirse a mitad de un trámite).
+  getActiveState,
   // Helpers puros expuestos para pruebas unitarias (sin efectos de red).
   usesStrictContact,
   usesReexplain,
