@@ -189,4 +189,5 @@ test("PE: sin información no deriva a la organización y recuerda sus temas; XT
 
 test("PE tiene mensaje de despedida por inactividad", () => {
   assert.match(strings("PE").inactivityFarewell(), /^Parece que ya no estás por aquí 😊\. Fue un gusto ayudarte\./);
+  assert.match(strings("PE").inactivityFarewellSteps(), /escríbeme \*siguiente\* y continuamos/);
 });

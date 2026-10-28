@@ -396,8 +396,8 @@ async function sendTypingIndicator(messageId, phoneNumberId, token) {
 
 // Despedida automática: si la persona deja de escribir durante 10 minutos tras
 // una respuesta del agente, se le envía un mensaje de cierre (una sola vez; cada
-// mensaje nuevo reinicia la cuenta). No se envía si el agente ya se despidió ni
-// a mitad de un paso a paso (puede estar haciendo el trámite). Solo en PE.
+// mensaje nuevo reinicia la cuenta). No se envía si el agente ya se despidió; a
+// mitad de un paso a paso se envía una variante que invita a retomarlo. Solo en PE.
 const FAREWELL_COUNTRIES = new Set(["PE"]);
 const INACTIVITY_FAREWELL_MS = 10 * 60 * 1000;
 
@@ -412,11 +412,9 @@ async function isMidStepFlow(from, countryCode) {
 
 const inactivityTimers = createInactivityTimers(INACTIVITY_FAREWELL_MS, (key, ctx) =>
   runSerialized(key, async () => {
-    if (await isMidStepFlow(ctx.from, ctx.countryCode)) {
-      console.log(`⏸️  [${ctx.countryCode}] ${ctx.from} — sin despedida: está a mitad de un paso a paso`);
-      return;
-    }
-    const message = strings(ctx.countryCode).inactivityFarewell();
+    const midSteps = await isMidStepFlow(ctx.from, ctx.countryCode);
+    const s = strings(ctx.countryCode);
+    const message = midSteps ? s.inactivityFarewellSteps() : s.inactivityFarewell();
     await sendWhatsAppMessage(ctx.from, message, ctx.phoneNumberId, ctx.token);
     await saveConversationTurn({
       userId: ctx.from, countryCode: ctx.countryCode, role: "assistant", message, source: "whatsapp",

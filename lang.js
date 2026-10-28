@@ -201,6 +201,8 @@ const COUNTRY_STRINGS = {
     fallbackNoExcel: () => `Entiendo lo que necesitas 💙, pero sobre ese tema no tengo información por ahora.\n\nDonde sí puedo orientarte es en tus documentos, la protección de tus hijos y el acceso a salud, colegio, trabajo y alimentación. ¿Te ayudo con alguno de esos temas?`,
     // Se envía tras unos minutos sin respuesta de la persona (ver server.js).
     inactivityFarewell: () => `Parece que ya no estás por aquí 😊. Fue un gusto ayudarte.\n\nSi tienes otra consulta, escríbeme cuando quieras; estaré aquí para orientarte 💙`,
+    // Variante si quedó a mitad de un paso a paso: invita a retomarlo.
+    inactivityFarewellSteps: () => `Parece que ya no estás por aquí 😊. Cuando quieras seguir con los pasos, escríbeme *siguiente* y continuamos desde donde lo dejaste 💙`,
   },
 };
 
