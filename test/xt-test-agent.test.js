@@ -191,3 +191,8 @@ test("PE tiene mensaje de despedida por inactividad", () => {
   assert.match(strings("PE").inactivityFarewell(), /^Parece que ya no estás por aquí 😊\. Fue un gusto ayudarte\./);
   assert.match(strings("PE").inactivityFarewellSteps(), /escríbeme \*siguiente\* y continuamos/);
 });
+
+test("XT (agente de prueba) tiene la misma despedida por inactividad que PE", () => {
+  assert.equal(strings("XT").inactivityFarewell(), strings("PE").inactivityFarewell());
+  assert.equal(strings("XT").inactivityFarewellSteps(), strings("PE").inactivityFarewellSteps());
+});

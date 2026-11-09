@@ -397,8 +397,8 @@ async function sendTypingIndicator(messageId, phoneNumberId, token) {
 // Despedida automática: si la persona deja de escribir durante 10 minutos tras
 // una respuesta del agente, se le envía un mensaje de cierre (una sola vez; cada
 // mensaje nuevo reinicia la cuenta). No se envía si el agente ya se despidió; a
-// mitad de un paso a paso se envía una variante que invita a retomarlo. Solo en PE.
-const FAREWELL_COUNTRIES = new Set(["PE"]);
+// mitad de un paso a paso se envía una variante que invita a retomarlo. Solo en PE y en el agente de prueba XT.
+const FAREWELL_COUNTRIES = new Set(["PE", "XT"]);
 const INACTIVITY_FAREWELL_MS = 10 * 60 * 1000;
 
 // ¿La última respuesta avanzó un paso a paso que sigue abierto? Un flujo activo

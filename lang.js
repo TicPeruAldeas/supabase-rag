@@ -192,17 +192,25 @@ function peruAgentStrings(topics, agentName = "Agente Perú Multipaís") {
   };
 }
 
+// Despedida por inactividad (ver server.js). La usan PE y el agente de prueba XT.
+const INACTIVITY_FAREWELL = {
+  inactivityFarewell: () => `Parece que ya no estás por aquí 😊. Fue un gusto ayudarte.\n\nSi tienes otra consulta, escríbeme cuando quieras; estaré aquí para orientarte 💙`,
+  // Variante si quedó a mitad de un paso a paso: invita a retomarlo.
+  inactivityFarewellSteps: () => `Parece que ya no estás por aquí 😊. Cuando quieras seguir con los pasos, escríbeme *siguiente* y continuamos desde donde lo dejaste 💙`,
+};
+
 const COUNTRY_STRINGS = {
-  XT: peruAgentStrings(XT_TOPICS, "Agente de prueba - Proyecto Multipaís"),
+  XT: {
+    ...peruAgentStrings(XT_TOPICS, "Agente de prueba - Proyecto Multipaís"),
+    ...INACTIVITY_FAREWELL,
+  },
   PE: {
     ...peruAgentStrings(PE_TOPICS),
     // Sin derivar a la organización: lo que no está en la matriz (alquiler,
     // préstamos...) no es algo en lo que Aldeas pueda ayudar.
     fallbackNoExcel: () => `Entiendo lo que necesitas 💙, pero sobre ese tema no tengo información por ahora.\n\nDonde sí puedo orientarte es en tus documentos, la protección de tus hijos y el acceso a salud, colegio, trabajo y alimentación. ¿Te ayudo con alguno de esos temas?`,
     // Se envía tras unos minutos sin respuesta de la persona (ver server.js).
-    inactivityFarewell: () => `Parece que ya no estás por aquí 😊. Fue un gusto ayudarte.\n\nSi tienes otra consulta, escríbeme cuando quieras; estaré aquí para orientarte 💙`,
-    // Variante si quedó a mitad de un paso a paso: invita a retomarlo.
-    inactivityFarewellSteps: () => `Parece que ya no estás por aquí 😊. Cuando quieras seguir con los pasos, escríbeme *siguiente* y continuamos desde donde lo dejaste 💙`,
+    ...INACTIVITY_FAREWELL,
   },
 };
 
