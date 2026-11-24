@@ -4,7 +4,7 @@ const { createClient } = require("@supabase/supabase-js");
 const OpenAI = require("openai").default;
 const Anthropic = require("@anthropic-ai/sdk");
 const { getCached, setCached } = require("./cache");
-const { langDirective, strings, analysisSystem, usesRichFormat } = require("./lang");
+const { langDirective, strings, analysisSystem, usesRichFormat, getLang } = require("./lang");
 
 // Mapa flow_id → URL de la fuente (generado del Excel por ingest-excel.js).
 // Se cita la fuente solo la PRIMERA vez que se toca un tema; mientras el tema
@@ -846,8 +846,8 @@ async function getLastFlowId(userId, countryCode) {
 // ── Agente de PRUEBA (XT): "no entendí" → volver a explicar ──
 // Si la persona dice que no entendió, se reformula la ÚLTIMA respuesta con
 // palabras más simples (desde el mismo contenido del Excel, sin inventar). Cada
-// "no entendí" seguido baja un nivel más. PE, CO y BR siguen el flujo normal.
-const REEXPLAIN_COUNTRIES = new Set(["XT", "PE"]);
+// "no entendí" seguido baja un nivel más. Activo en XT, PE y BR.
+const REEXPLAIN_COUNTRIES = new Set(["XT", "PE", "BR"]);
 
 function usesReexplain(countryCode) {
   return REEXPLAIN_COUNTRIES.has(String(countryCode || "").toUpperCase());
@@ -981,8 +981,8 @@ function truncateForRerank(text, maxChars = 900) {
 // Agente de PRUEBA (XT): el reranker usa Claude Haiku 5.5, más rápido (~0,7 s
 // menos por llamada, medido con conversaciones reales de XT) y que eligió los
 // mismos temas. Haiku 5.5 piensa por defecto y no admite temperature: se
-// desactiva el pensamiento para que responda rápido. PE, CO y BR no cambian.
-const FAST_RERANK_COUNTRIES = new Set(["XT", "PE"]);
+// desactiva el pensamiento para que responda rápido. Activo en XT, PE y BR.
+const FAST_RERANK_COUNTRIES = new Set(["XT", "PE", "BR"]);
 const FAST_RERANK_MODEL = "claude-haiku-5-5";
 
 function rerankModelParams(countryCode) {
@@ -1132,8 +1132,14 @@ function stripAccents(text) {
   return String(text || "").normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 
-function isContactRequest(text) {
-  return CONTACT_REQUEST_REGEX.test(stripAccents(text));
+// Pedidos de contacto en portugués (BR). Sin tildes, como el patrón de arriba.
+// Solo se usa en países en portugués, así PE/CO no cambian.
+const CONTACT_REQUEST_REGEX_PT = /\b(telefone(?:s)?|numero(?:s)?|celular|whatsapp|zap|e-?mail|endereco(?:s)?|contato(?:s)?|site|onde\s+(?:fica|ficam|atendem|posso\s+(?:ir|procurar))|com\s+quem\s+(?:falo|falar)|ligar\s+(?:para|pro|pra))\b/i;
+
+function isContactRequest(text, countryCode) {
+  const t = stripAccents(text);
+  if (CONTACT_REQUEST_REGEX.test(t)) return true;
+  return getLang(countryCode) === "pt" && CONTACT_REQUEST_REGEX_PT.test(t);
 }
 
 // Palabras de la consulta que identifican la institución/servicio pedido (se
@@ -1144,7 +1150,10 @@ const CONTACT_STOPWORDS = new Set(("cual cuál cuales cuáles como cómo donde d
   "telefono teléfono telefonos teléfonos numero número numeros números celular whatsapp central correo correos email direccion " +
   "dirección direcciones sede sedes oficina oficinas horario horarios pagina página sitio web enlace link contacto contactos " +
   "contactar comunicarme comunicar llamar llamo marcar atienden queda quedan esta está están estan tengo tienes ellos ellas " +
-  "puede quisiera podria podría podrian podrían ayuda ayudar informacion información").split(/\s+/));
+  "puede quisiera podria podría podrian podrían ayuda ayudar informacion información " +
+  // Portugués (BR)
+  "telefone telefones endereço endereco endereços contato contatos ligar onde fica ficam atendem qual quais você voce " +
+  "preciso quero tenho obrigado obrigada ajudar informação informações").split(/\s+/));
 
 function contactSearchTokens(text) {
   // NFC: la BD guarda las tildes precompuestas; un token descompuesto no haría match en ilike.
@@ -1158,8 +1167,8 @@ function contactSearchTokens(text) {
 // Si alguien pide un contacto que NO está en la base, el modo estricto evita
 // caer en una fila ajena por una palabra suelta (p. ej. "salud" en los Datos de
 // la fila de abuso sexual) y responde "No tengo ese contacto". Se activa primero
-// en el país de PRUEBA (XT); para extenderlo, añadir aquí PE, CO, BR.
-const STRICT_CONTACT_COUNTRIES = new Set(["XT", "PE"]);
+// en el país de PRUEBA (XT); activo también en PE y BR.
+const STRICT_CONTACT_COUNTRIES = new Set(["XT", "PE", "BR"]);
 
 function usesStrictContact(countryCode) {
   return STRICT_CONTACT_COUNTRIES.has(String(countryCode || "").toUpperCase());
@@ -2337,7 +2346,7 @@ async function askAI(userId, countryCode, question, options = {}) {
         traceMetrics.retrieval_query = searchQuery;
         // ¿Pide explícitamente un dato de contacto? Se mira el mensaje literal y la
         // interpretación (la reescritura puede perder la palabra "teléfono").
-        const contactRequest = isContactRequest(question) || isContactRequest(searchQuery);
+        const contactRequest = isContactRequest(question, countryCode) || isContactRequest(searchQuery, countryCode);
         if (contactRequest) traceMetrics.contact_request = 1;
         let flow = precomputedFlow ?? await searchFlow(countryCode, searchQuery, { contactRequest });
 

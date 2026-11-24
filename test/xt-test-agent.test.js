@@ -22,7 +22,7 @@ const BLOQUEADO = { kind: "institution", token: "Ministerio" };
 
 test("contactos estrictos: activos en XT y PE", () => {
   assert.strictEqual(usesStrictContact("XT"), true);
-  for (const cc of ["CO", "BR"]) assert.strictEqual(usesStrictContact(cc), false);
+  for (const cc of ["CO"]) assert.strictEqual(usesStrictContact(cc), false);
 });
 
 test("la búsqueda estricta exige TODAS las palabras en los Datos", () => {
@@ -49,14 +49,14 @@ test("sin contactOnly (CO, BR) el respaldo del guardarraíl no cambia", () => {
 
 test("XT y PE usan el formato de viñetas; CO y BR no", () => {
   assert.strictEqual(usesRichFormat("XT"), true);
-  for (const cc of ["CO", "BR"]) assert.strictEqual(usesRichFormat(cc), false);
+  for (const cc of ["CO"]) assert.strictEqual(usesRichFormat(cc), false);
 });
 
 test("la directiva de formato se anexa a XT y PE", () => {
   assert.match(langDirective("XT"), /FORMATO DE RESPUESTA PARA WHATSAPP/);
   assert.strictEqual(langDirective("CO"), "");
   assert.strictEqual(langDirective("CO"), "");
-  assert.doesNotMatch(langDirective("BR"), /FORMATO DE RESPUESTA/);
+  assert.match(langDirective("BR"), /FORMATO DE RESPUESTA/);
 });
 
 test("detecta portugués sin confundirlo con español", () => {
@@ -122,7 +122,7 @@ test("CO y BR conservan sus textos originales aunque se les pase un menú", () =
 test("XT y PE vuelven a explicar cuando la persona no entendió; CO y BR no", () => {
   const { usesReexplain, isConfusionMessage, confusionLevel } = require("../rag-service");
   assert.strictEqual(usesReexplain("XT"), true);
-  for (const cc of ["CO", "BR"]) assert.strictEqual(usesReexplain(cc), false);
+  for (const cc of ["CO"]) assert.strictEqual(usesReexplain(cc), false);
   for (const t of ["no entendí", "No entiendo", "no me quedó claro", "explícame mejor", "¿qué significa eso?", "más simple porfa", "no comprendo nada", "Não entendi", "explica melhor"]) {
     assert.strictEqual(isConfusionMessage(t), true, t);
   }
@@ -139,20 +139,20 @@ test("XT y PE vuelven a explicar cuando la persona no entendió; CO y BR no", ()
 
 test("XT y PE piden lenguaje claro", () => {
   assert.match(langDirective("XT"), /LENGUAJE CLARO/);
-  for (const cc of ["CO", "BR"]) assert.doesNotMatch(langDirective(cc), /LENGUAJE CLARO/);
+  for (const cc of ["CO"]) assert.doesNotMatch(langDirective(cc), /LENGUAJE CLARO/);
 });
 
 test("XT y PE: respuestas cortas y claras; CO y BR sin cambios", () => {
   assert.match(langDirective("XT"), /RESPUESTA CORTA Y CLARA/);
   assert.ok(langDirective("XT").includes('Máximo 40 palabras en total. Si presentas un paso ("Paso X de N"), hasta 65 palabras.'));
   assert.ok(langDirective("PE").includes('Máximo 50 palabras en total. Si presentas un paso ("Paso X de N"), hasta 80 palabras.'));
-  for (const cc of ["CO", "BR"]) assert.doesNotMatch(langDirective(cc), /RESPUESTA CORTA/);
+  for (const cc of ["CO"]) assert.doesNotMatch(langDirective(cc), /RESPUESTA CORTA/);
 });
 
 test("XT y PE usan Haiku 5.5 sin pensamiento para el reranker; CO y BR siguen con el modelo principal", () => {
   const { rerankModelParams } = require("../rag-service");
   assert.deepStrictEqual(rerankModelParams("XT"), { model: "claude-haiku-5-5", thinking: { type: "disabled" } });
-  for (const cc of ["CO", "BR"]) {
+  for (const cc of ["CO"]) {
     assert.deepStrictEqual(rerankModelParams(cc), { model: "claude-sonnet-4-6", temperature: 0 });
   }
 });

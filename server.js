@@ -372,8 +372,8 @@ function runSerialized(key, task) {
 // mientras se genera la respuesta (Meta lo quita al enviar la respuesta o a los
 // ~25 s). No acelera nada, pero evita que la espera parezca un bot colgado.
 // Nunca bloquea ni rompe el flujo: cualquier error solo se registra.
-// Por ahora solo en el agente de PRUEBA (XT); PE, CO y BR no cambian.
-const TYPING_INDICATOR_COUNTRIES = new Set(["XT", "PE"]);
+// Activo en el agente de PRUEBA (XT), PE y BR.
+const TYPING_INDICATOR_COUNTRIES = new Set(["XT", "PE", "BR"]);
 
 async function sendTypingIndicator(messageId, phoneNumberId, token) {
   if (!messageId) return;
@@ -397,8 +397,8 @@ async function sendTypingIndicator(messageId, phoneNumberId, token) {
 // Despedida automática: si la persona deja de escribir durante 10 minutos tras
 // una respuesta del agente, se le envía un mensaje de cierre (una sola vez; cada
 // mensaje nuevo reinicia la cuenta). No se envía si el agente ya se despidió; a
-// mitad de un paso a paso se envía una variante que invita a retomarlo. Solo en PE y en el agente de prueba XT.
-const FAREWELL_COUNTRIES = new Set(["PE", "XT"]);
+// mitad de un paso a paso se envía una variante que invita a retomarlo. En PE, BR y el agente de prueba XT.
+const FAREWELL_COUNTRIES = new Set(["PE", "XT", "BR"]);
 const INACTIVITY_FAREWELL_MS = 10 * 60 * 1000;
 
 // ¿La última respuesta avanzó un paso a paso que sigue abierto? Un flujo activo

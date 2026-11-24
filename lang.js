@@ -27,12 +27,19 @@ const LANG_DIRECTIVE = {
 IDIOMA DE RESPOSTA (OBRIGATÓRIO): Responda SEMPRE em português do Brasil (pt-BR), independentemente do idioma da fonte, do histórico ou da pergunta do usuário. Esta instrução anula qualquer indicação anterior de responder em espanhol. Mantenha um tom empático, caloroso e natural em português brasileiro.`,
 };
 
+// BR: los formatos fijos de las instrucciones están en español ("Paso 1 de 3:",
+// "¿Quieres que te diga el siguiente paso?"); se piden en portugués. Va al final
+// del prompt, después de la directiva de formato, para que el idioma prevalezca.
+const PT_LABELS_DIRECTIVE = `
+
+RÓTULOS EM PORTUGUÊS (OBRIGATÓRIO): as instruções acima estão em espanhol, mas a resposta é sempre em português do Brasil. Escreva os rótulos fixos em português: "Paso 1 de 3:" → "Passo 1 de 3:"; "¿Quieres que te diga el siguiente paso?" → "Quer que eu te diga o próximo passo?". "Fase 1 de 3" se mantém igual. Não traduza nomes de instituições, siglas, telefones, e-mails nem links: copie-os exatamente como aparecem na fonte.`;
+
 // ── Agente de PRUEBA (XT) ─────────────────────────────────────
 // XT es el país de pruebas: se presenta como Perú y responde en mensajes cortos
 // con viñetas, y su saludo lista las categorías de su base de conocimiento.
-// Desde oct. 2026 PE usa lo mismo que XT. CO y BR NO cambian: para ellos la
-// directiva de formato es "" y los textos son los de siempre.
-const RICH_FORMAT_COUNTRIES = new Set(["XT", "PE"]);
+// Desde oct. 2026 PE usa lo mismo que XT, y desde nov. 2026 también BR
+// (Producto 3), con sus propios textos en portugués. CO no cambia por ahora.
+const RICH_FORMAT_COUNTRIES = new Set(["XT", "PE", "BR"]);
 
 function usesRichFormat(countryCode) {
   return RICH_FORMAT_COUNTRIES.has(String(countryCode || "").toUpperCase());
@@ -89,6 +96,10 @@ function langDirective(countryCode) {
   const cc = String(countryCode || "").toUpperCase();
   const format = usesRichFormat(cc) ? richFormatDirective(MAX_WORDS[cc] || DEFAULT_MAX_WORDS) : "";
   const lang = usesAutoLanguage(countryCode) ? AUTO_LANG_DIRECTIVE : (LANG_DIRECTIVE[getLang(countryCode)] || "");
+  // Portugués con formato (BR): el idioma va al final para que prevalezca.
+  if (format && !usesAutoLanguage(countryCode) && getLang(countryCode) === "pt") {
+    return format + lang + PT_LABELS_DIRECTIVE;
+  }
   return lang + format;
 }
 
@@ -192,7 +203,37 @@ function peruAgentStrings(topics, agentName = "Agente Perú Multipaís") {
   };
 }
 
-// Despedida por inactividad (ver server.js). La usan PE y el agente de prueba XT.
+// BR (en portugués): las 3 categorías de su matriz (V8, nov. 2026).
+const BR_TOPICS = [
+  "📄 *Regularização e Documentação:* situação migratória, refúgio, residência e documentos dos seus filhos",
+  "🛡️ *Proteção Infantil e Familiar:* violência, rede de proteção, direitos das crianças e discriminação",
+  "🤝 *Acesso a Direitos e Serviços:* saúde, escola, benefícios, trabalho e justiça",
+].join("\n");
+
+// Textos del agente de Brasil ("Maria"), en portugués, tomados de los mensajes
+// que envió el equipo de Brasil (bienvenida, consentimiento y despedida) con
+// correcciones mínimas. El botón dice "Aceito" porque el texto pregunta si acepta.
+const BR_FAREWELL = "A Aldeias Infantis SOS e a Maria agradecem pelo contato. Quando precisar de algo, é só chamar! Até breve! 👋";
+
+function brazilAgentStrings(topics) {
+  return {
+    consentText: (userName) => {
+      const saudacao = userName ? `Olá, ${userName}, que bom ter você aqui!` : "Olá, que bom ter você aqui!";
+      return `${saudacao} Sou a Maria, assistente virtual da Aldeias Infantis SOS. 🧸 Estou aqui para te ajudar com as dúvidas e informações de que você precisar sobre migração no Brasil!\n\nDurante a nossa conversa, alguns dados podem ser coletados. Você aceita a Política de Privacidade da Aldeias Infantis SOS? Acesse nossa Política de Privacidade no link: https://www.aldeiasinfantis.org.br/privacidade-e-seguranca`;
+    },
+    consentButtonTitle: () => "Aceito",
+    welcome: () => `Obrigada! Posso te ajudar com estes temas:\n\n${topics}\n\nQual a sua pergunta?`,
+    smallTalk: () => `Olá! Sou a Maria, assistente virtual da Aldeias Infantis SOS. 🧸 Posso te ajudar com estes temas:\n\n${topics}\n\nQual a sua pergunta?`,
+    fallbackNoExcel: () => `Entendo o que você precisa 💙, mas sobre esse assunto ainda não tenho informação.\n\nPosso te orientar sobre seus documentos, a proteção dos seus filhos e o acesso a saúde, escola, benefícios, trabalho e justiça. Quer que eu te ajude com algum desses temas?`,
+    closing: () => BR_FAREWELL,
+    closingInFlow: () => BR_FAREWELL,
+    inactivityFarewell: () => BR_FAREWELL,
+    // Variante si quedó a mitad de un paso a paso: invita a retomarlo.
+    inactivityFarewellSteps: () => "A Aldeias Infantis SOS e a Maria agradecem pelo contato. Quando quiser continuar com os passos, me escreva *próximo* e seguimos de onde paramos. Até breve! 👋",
+  };
+}
+
+// Despedida por inactividad (ver server.js). La usan PE y el agente de prueba XT (BR tiene la suya en portugués).
 const INACTIVITY_FAREWELL = {
   inactivityFarewell: () => `Parece que ya no estás por aquí 😊. Fue un gusto ayudarte.\n\nSi tienes otra consulta, escríbeme cuando quieras; estaré aquí para orientarte 💙`,
   // Variante si quedó a mitad de un paso a paso: invita a retomarlo.
@@ -212,6 +253,8 @@ const COUNTRY_STRINGS = {
     // Se envía tras unos minutos sin respuesta de la persona (ver server.js).
     ...INACTIVITY_FAREWELL,
   },
+  // BR (Producto 3): agente "Maria", en portugués. CO no cambia por ahora.
+  BR: brazilAgentStrings(BR_TOPICS),
 };
 
 // ── Agente de PRUEBA (XT) en portugués ────────────────────────
