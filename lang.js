@@ -223,7 +223,7 @@ function brazilAgentStrings(topics) {
     },
     consentButtonTitle: () => "Aceito",
     welcome: () => `Obrigada! Posso te ajudar com estes temas:\n\n${topics}\n\nQual a sua pergunta?`,
-    smallTalk: () => `Olá! Sou a Maria, assistente virtual da Aldeias Infantis SOS. 🧸 Posso te ajudar com estes temas:\n\n${topics}\n\nQual a sua pergunta?`,
+    smallTalk: () => `Olá! Sou a Maria, assistente virtual da Aldeias Infantis SOS - Brasil. 🧸 Posso te ajudar com estes temas:\n\n${topics}\n\nQual a sua pergunta?`,
     fallbackNoExcel: () => `Entendo o que você precisa 💙, mas sobre esse assunto ainda não tenho informação.\n\nPosso te orientar sobre seus documentos, a proteção dos seus filhos e o acesso a saúde, escola, benefícios, trabalho e justiça. Quer que eu te ajude com algum desses temas?`,
     closing: () => BR_FAREWELL,
     closingInFlow: () => BR_FAREWELL,

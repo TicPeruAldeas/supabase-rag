@@ -61,3 +61,7 @@ test("BR: respuestas cortas como el agente de prueba (40 palabras; 65 por paso)"
   assert.ok(langDirective("BR").includes('Máximo 40 palabras en total. Si presentas un paso ("Paso X de N"), hasta 65 palabras.'));
   assert.ok(langDirective("PE").includes("Máximo 50 palabras en total."));
 });
+
+test("BR: el saludo en medio de la conversación también dice Aldeias Infantis SOS - Brasil", () => {
+  assert.match(strings("BR").smallTalk(), /^Olá! Sou a Maria, assistente virtual da Aldeias Infantis SOS - Brasil\. 🧸/);
+});
