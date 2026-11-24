@@ -31,6 +31,7 @@ const express = require("express");
 const { askAI, saveConversationTurn, buildTopicsMenu, getActiveState } = require("./rag-service");
 const { strings, stepSummarySystem } = require("./lang");
 const { createInactivityTimers } = require("./inactivity");
+const { SURVEY_GOOD_ID, SURVEY_IMPROVE_ID, usesSurvey, classifyRating, looksLikeQuery, createSurveyStore } = require("./survey");
 
 const CLAUDE_MODEL = "claude-sonnet-4-6";
 
@@ -429,6 +430,88 @@ function scheduleFarewell(ctx) {
   inactivityTimers.schedule(`${ctx.countryCode}:${ctx.from}`, ctx);
 }
 
+// ── Encuesta de satisfacción al despedirse (ver survey.js) ────
+const surveyStore = createSurveyStore();
+
+// Envía la pregunta con los botones "Foi boa" / "Pode melhorar".
+async function sendSurveyPrompt({ from, countryCode, phoneNumberId, token, incomingPhoneNumberId, closingMetadata }) {
+  const s = strings(countryCode);
+  const question = s.surveyQuestion();
+  await sendWhatsAppButton(
+    from,
+    question,
+    [
+      { id: SURVEY_GOOD_ID, title: s.surveyGoodTitle() },
+      { id: SURVEY_IMPROVE_ID, title: s.surveyImproveTitle() },
+    ],
+    phoneNumberId,
+    token
+  );
+  surveyStore.set(`${countryCode}:${from}`, "rating");
+  await saveConversationTurn({
+    userId: from, countryCode, role: "assistant", message: question, source: "whatsapp",
+    metadata: { ...(closingMetadata || {}), event: "survey_prompt", phone_number_id: incomingPhoneNumberId },
+  }).catch((err) => console.error("Error guardando encuesta:", err.message));
+  console.log(`📝 [${countryCode}] ${from} — encuesta de satisfacción enviada`);
+}
+
+// Atiende la respuesta a la encuesta. Devuelve true si el mensaje era parte de
+// la encuesta (calificación o comentario); false si debe procesarse normal.
+async function handleSurveyReply({ from, text, buttonId, countryCode, phoneNumberId, token, messageId, incomingPhoneNumberId }) {
+  if (!usesSurvey(countryCode)) return false;
+  const key = `${countryCode}:${from}`;
+  // "done": ya respondió hace poco; no hay nada pendiente.
+  const stored = surveyStore.get(key);
+  const stage = stored === "done" ? null : stored;
+  const isSurveyButton = buttonId === SURVEY_GOOD_ID || buttonId === SURVEY_IMPROVE_ID;
+  if (!stage && !isSurveyButton) return false;
+
+  const s = strings(countryCode);
+  const reply = async (message, event) => {
+    await sendWhatsAppMessage(from, message, phoneNumberId, token);
+    await saveConversationTurn({
+      userId: from, countryCode, role: "assistant", message, source: "whatsapp",
+      metadata: { event, phone_number_id: incomingPhoneNumberId },
+    }).catch((err) => console.error("Error guardando respuesta de encuesta:", err.message));
+  };
+
+  // Calificación: botón, o texto equivalente mientras la pregunta está abierta.
+  const rating = isSurveyButton || stage === "rating" ? classifyRating(buttonId, text) : null;
+  if (rating) {
+    await saveConversationTurn({
+      userId: from, countryCode, role: "user",
+      message: text || (rating === "good" ? s.surveyGoodTitle() : s.surveyImproveTitle()),
+      source: "whatsapp",
+      metadata: { event: "survey_rating", rating, wa_message_id: messageId, phone_number_id: incomingPhoneNumberId },
+    }).catch((err) => console.error("Error guardando calificación:", err.message));
+    if (rating === "good") {
+      surveyStore.set(key, "done");
+      await reply(s.surveyThanksGood(), "survey_thanks");
+    } else {
+      surveyStore.set(key, "comment");
+      await reply(s.surveyAskComment(), "survey_ask_comment");
+    }
+    console.log(`📝 [${countryCode}] ${from} — calificación: ${rating}`);
+    return true;
+  }
+
+  // Comentario de mejora (si no parece una consulta nueva).
+  if (stage === "comment" && text && !looksLikeQuery(text)) {
+    surveyStore.set(key, "done");
+    await saveConversationTurn({
+      userId: from, countryCode, role: "user", message: text, source: "whatsapp",
+      metadata: { event: "survey_comment", comment: text, wa_message_id: messageId, phone_number_id: incomingPhoneNumberId },
+    }).catch((err) => console.error("Error guardando comentario:", err.message));
+    await reply(s.surveyThanksComment(), "survey_thanks");
+    console.log(`📝 [${countryCode}] ${from} — comentario de mejora recibido`);
+    return true;
+  }
+
+  // Escribió otra cosa (una consulta): se cierra la encuesta y se responde normal.
+  if (stage) surveyStore.clear(key);
+  return false;
+}
+
 // Procesa un mensaje entrante completo: guarda turno, consulta RAG, responde y
 // guarda la respuesta. Los `await` de guardado mantienen el orden cronológico en
 // la BD para que el historial del siguiente mensaje sea consistente.
@@ -457,6 +540,15 @@ async function handleIncomingMessage({ from, text, countryCode, phoneNumberId, t
       waMessageId: messageId,
       phoneNumberId: incomingPhoneNumberId,
     });
+
+    // Al despedirse, en los países con encuesta se pregunta por la conversación
+    // antes de la despedida (que llega después de calificar).
+    // Si ya respondió la encuesta hace poco, se despide sin volver a preguntar.
+    if (result.metadata?.search_type === "closing" && usesSurvey(countryCode)
+        && surveyStore.get(`${countryCode}:${from}`) !== "done") {
+      await sendSurveyPrompt({ from, countryCode, phoneNumberId, token, incomingPhoneNumberId, closingMetadata: result.metadata });
+      return;
+    }
 
     await sendWhatsAppMessage(from, result.response, phoneNumberId, token);
     console.log(`✅ [${countryCode}] ${from} → ${result.metadata?.search_type} ${result.metadata?.total_ms}ms`);
@@ -527,6 +619,11 @@ async function handleConsentGate({ from, text, buttonId, userName, countryCode, 
         metadata: { event: "consent_welcome", phone_number_id: incomingPhoneNumberId },
       }).catch((err) => console.error("Error guardando bienvenida:", err.message));
       console.log(`✅ [${countryCode}] ${from} aceptó el consentimiento`);
+      return;
+    }
+
+    // Respuesta a la encuesta de satisfacción (calificación o comentario).
+    if (await handleSurveyReply({ from, text, buttonId, countryCode, phoneNumberId, token, messageId, incomingPhoneNumberId })) {
       return;
     }
 

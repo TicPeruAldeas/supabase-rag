@@ -230,6 +230,13 @@ function brazilAgentStrings(topics) {
     inactivityFarewell: () => BR_FAREWELL,
     // Variante si quedó a mitad de un paso a paso: invita a retomarlo.
     inactivityFarewellSteps: () => "A Aldeias Infantis SOS e a Maria agradecem pelo contato. Quando quiser continuar com os passos, me escreva *próximo* e seguimos de onde paramos. Até breve! 👋",
+    // Encuesta de satisfacción al despedirse (ver survey.js).
+    surveyQuestion: () => "Antes de concluir, conte para a gente: nossa conversa foi boa ou pode melhorar?",
+    surveyGoodTitle: () => "Foi boa 👍",
+    surveyImproveTitle: () => "Pode melhorar",
+    surveyThanksGood: () => `Que bom! Obrigada pela sua avaliação 😊\n\n${BR_FAREWELL}`,
+    surveyAskComment: () => "Obrigada! O que podemos melhorar? Escreva em poucas palavras.",
+    surveyThanksComment: () => `Obrigada pelo seu comentário, ele nos ajuda a melhorar 💙\n\n${BR_FAREWELL}`,
   };
 }
 
