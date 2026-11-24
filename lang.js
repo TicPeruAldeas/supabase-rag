@@ -100,16 +100,29 @@ const NO_ORG_DERIVATION_DIRECTIVE = `
 
 SIN DERIVAR A LA ORGANIZACIÓN (OBLIGATORIO; reemplaza cualquier indicación anterior de remitir a los "canales oficiales" de la organización o a su sede): no recomiendes comunicarse con la organización ni con sus canales oficiales. Si no tienes la información o el contacto que pide, dilo con calidez y ofrece ayudar con lo que sí cubres. Los contactos de instituciones que aparezcan en la fuente sí puedes darlos.`;
 
+// Países donde, al resumir, el agente conserva los nombres de lugares e
+// instituciones tal como están en la fuente (BR: no presentar el PITRIG como
+// un puesto de la Polícia Federal ni omitir las ciudades).
+const EXACT_NAMES_COUNTRIES = new Set(["BR"]);
+const EXACT_NAMES_DIRECTIVE = `
+
+NOMBRES EXACTOS (OBLIGATORIO): al resumir, conserva tal cual los nombres de instituciones, servicios, sistemas, puestos de atención y ciudades que aparecen en la fuente (p. ej. Polícia Federal; PITRIG, que son los Postos de Interiorização e Triagem; Sisconare; CONARE). No los mezcles, no digas que uno pertenece a otro ni les atribuyas funciones que la fuente no indica. Si la fuente menciona ciudades o lugares concretos, inclúyelos.`;
+
+function usesExactNames(countryCode) {
+  return EXACT_NAMES_COUNTRIES.has(String(countryCode || "").toUpperCase());
+}
+
 function langDirective(countryCode) {
   const cc = String(countryCode || "").toUpperCase();
   const format = usesRichFormat(cc) ? richFormatDirective(MAX_WORDS[cc] || DEFAULT_MAX_WORDS) : "";
   const lang = usesAutoLanguage(countryCode) ? AUTO_LANG_DIRECTIVE : (LANG_DIRECTIVE[getLang(countryCode)] || "");
   const noOrg = NO_ORG_DERIVATION_COUNTRIES.has(cc) ? NO_ORG_DERIVATION_DIRECTIVE : "";
+  const exactNames = EXACT_NAMES_COUNTRIES.has(cc) ? EXACT_NAMES_DIRECTIVE : "";
   // Portugués con formato (BR): el idioma va al final para que prevalezca.
   if (format && !usesAutoLanguage(countryCode) && getLang(countryCode) === "pt") {
-    return format + lang + PT_LABELS_DIRECTIVE + noOrg;
+    return format + lang + PT_LABELS_DIRECTIVE + exactNames + noOrg;
   }
-  return lang + format + noOrg;
+  return lang + format + exactNames + noOrg;
 }
 
 // ── Textos de cara al usuario ─────────────────────────────────
@@ -435,6 +448,7 @@ function analysisSystem(countryCode, orgName) {
 }
 
 module.exports = {
+  usesExactNames,
   getLang,
   usesRichFormat,
   usesAutoLanguage,

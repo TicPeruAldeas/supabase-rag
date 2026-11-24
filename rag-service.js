@@ -4,7 +4,7 @@ const { createClient } = require("@supabase/supabase-js");
 const OpenAI = require("openai").default;
 const Anthropic = require("@anthropic-ai/sdk");
 const { getCached, setCached } = require("./cache");
-const { langDirective, strings, analysisSystem, usesRichFormat, getLang } = require("./lang");
+const { langDirective, strings, analysisSystem, usesRichFormat, getLang, usesExactNames } = require("./lang");
 
 // Mapa flow_id → URL de la fuente (generado del Excel por ingest-excel.js).
 // Se cita la fuente solo la PRIMERA vez que se toca un tema; mientras el tema
@@ -2459,7 +2459,11 @@ async function askAI(userId, countryCode, question, options = {}) {
             traceMetrics.total_steps = steps.length;
             // El resumen IA no conserva la fase; se toma del detalle del paso 1.
             const firstPhase = String(steps[0].step_detail || "").match(/^Fase \d+ de \d+[^.]*\./);
-            const firstContent = firstPhase ? `${firstPhase[0]} ${steps[0].step_summary}` : steps[0].step_summary;
+            // BR: el resumen IA pierde nombres y ciudades (p. ej. PITRIG de Boa Vista,
+            // Pacaraima y Manaus); se usa el texto de la matriz, como en los pasos siguientes.
+            const firstContent = usesExactNames(countryCode) && steps[0].step_detail
+              ? steps[0].step_detail
+              : (firstPhase ? `${firstPhase[0]} ${steps[0].step_summary}` : steps[0].step_summary);
             const response = await presentStepWithLLM(firstContent, {
               isDetail: false, isLastStep: steps.length === 1,
               question, history, orgName, countryCode,
