@@ -413,6 +413,8 @@ async function isMidStepFlow(from, countryCode) {
 
 const inactivityTimers = createInactivityTimers(INACTIVITY_FAREWELL_MS, (key, ctx) =>
   runSerialized(key, async () => {
+    // Si quedó una encuesta sin responder, se cierra con esta despedida.
+    surveyStore.clear(key);
     const midSteps = await isMidStepFlow(ctx.from, ctx.countryCode);
     const s = strings(ctx.countryCode);
     const message = midSteps ? s.inactivityFarewellSteps() : s.inactivityFarewell();
@@ -448,6 +450,8 @@ async function sendSurveyPrompt({ from, countryCode, phoneNumberId, token, incom
     token
   );
   surveyStore.set(`${countryCode}:${from}`, "rating");
+  // Si no responde la encuesta, a los 10 minutos recibe igual la despedida.
+  scheduleFarewell({ from, countryCode, phoneNumberId, token, incomingPhoneNumberId });
   await saveConversationTurn({
     userId: from, countryCode, role: "assistant", message: question, source: "whatsapp",
     metadata: { ...(closingMetadata || {}), event: "survey_prompt", phone_number_id: incomingPhoneNumberId },
@@ -490,6 +494,8 @@ async function handleSurveyReply({ from, text, buttonId, countryCode, phoneNumbe
     } else {
       surveyStore.set(key, "comment");
       await reply(s.surveyAskComment(), "survey_ask_comment");
+      // Si no escribe el comentario, a los 10 minutos recibe igual la despedida.
+      scheduleFarewell({ from, countryCode, phoneNumberId, token, incomingPhoneNumberId });
     }
     console.log(`📝 [${countryCode}] ${from} — calificación: ${rating}`);
     return true;
