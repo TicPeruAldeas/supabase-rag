@@ -92,15 +92,24 @@ const AUTO_LANG_DIRECTIVE = `
 
 IDIOMA DE RESPUESTA (OBLIGATORIO): Responde en el MISMO idioma del ÚLTIMO mensaje del usuario. Si escribe en portugués, responde en portugués de Brasil; si escribe en español, responde en español. El contenido de la fuente está en español: tradúcelo con naturalidad, pero NO traduzcas ni cambies nombres propios, nombres de instituciones u organismos, siglas, teléfonos, correos ni enlaces: cópialos exactamente como aparecen en la fuente. Traduce también las frases fijas de formato y las preguntas de cierre que te indiquen las instrucciones (por ejemplo, en portugués "Paso 1 de 5:" se escribe "Passo 1 de 5:" y "¿Quieres que te diga el siguiente paso?" se escribe "Quer que eu te diga o próximo passo?"), sin mezclar idiomas en la misma respuesta. Si la respuesta debe ser un JSON, mantén las claves y los valores de control (como "accion") exactamente como se piden y aplica el idioma solo al texto para el usuario. Esta instrucción anula cualquier indicación anterior de responder siempre en español.`;
 
+// Países que NO derivan a los canales de la organización (su matriz no tiene
+// sus contactos): si no hay información, se dice y se ofrecen los temas que sí
+// cubre. Va al final del prompt para que prevalezca sobre "canales oficiales".
+const NO_ORG_DERIVATION_COUNTRIES = new Set(["CO", "BR"]);
+const NO_ORG_DERIVATION_DIRECTIVE = `
+
+SIN DERIVAR A LA ORGANIZACIÓN (OBLIGATORIO; reemplaza cualquier indicación anterior de remitir a los "canales oficiales" de la organización o a su sede): no recomiendes comunicarse con la organización ni con sus canales oficiales. Si no tienes la información o el contacto que pide, dilo con calidez y ofrece ayudar con lo que sí cubres. Los contactos de instituciones que aparezcan en la fuente sí puedes darlos.`;
+
 function langDirective(countryCode) {
   const cc = String(countryCode || "").toUpperCase();
   const format = usesRichFormat(cc) ? richFormatDirective(MAX_WORDS[cc] || DEFAULT_MAX_WORDS) : "";
   const lang = usesAutoLanguage(countryCode) ? AUTO_LANG_DIRECTIVE : (LANG_DIRECTIVE[getLang(countryCode)] || "");
+  const noOrg = NO_ORG_DERIVATION_COUNTRIES.has(cc) ? NO_ORG_DERIVATION_DIRECTIVE : "";
   // Portugués con formato (BR): el idioma va al final para que prevalezca.
   if (format && !usesAutoLanguage(countryCode) && getLang(countryCode) === "pt") {
-    return format + lang + PT_LABELS_DIRECTIVE;
+    return format + lang + PT_LABELS_DIRECTIVE + noOrg;
   }
-  return lang + format;
+  return lang + format + noOrg;
 }
 
 // ── Textos de cara al usuario ─────────────────────────────────
@@ -248,6 +257,10 @@ function brazilAgentStrings(topics) {
     welcome: () => `Obrigada! Posso te ajudar com estes temas:\n\n${topics}\n\nQual a sua pergunta?`,
     smallTalk: () => `Olá! Sou a Maria, assistente virtual da Aldeias Infantis SOS - Brasil. 🧸 Posso te ajudar com estes temas:\n\n${topics}\n\nQual a sua pergunta?`,
     fallbackNoExcel: () => `Entendo o que você precisa 💙, mas sobre esse assunto ainda não tenho informação.\n\nPosso te orientar sobre seus documentos, a proteção dos seus filhos e o acesso a saúde, escola, benefícios, trabalho e justiça. Quer que eu te ajude com algum desses temas?`,
+    // Opción 4 (solo informativa): sin contacto, no deriva a la organización.
+    contactFallback: () => `Obrigada por compartilhar. Por enquanto não tenho um contato específico para isso por aqui.\n\nSe quiser, posso te orientar com as informações e os contatos das instituições públicas que tenho sobre o seu tema.`,
+    contactNotFound: () => `Não tenho esse contato por aqui. Se quiser, posso te passar os contatos das instituições públicas que tenho sobre o seu tema.`,
+    clarificationDefault: () => `Sobre qual tema posso te orientar: seus documentos, a proteção dos seus filhos ou o acesso a saúde, escola, benefícios, trabalho e justiça?`,
     closing: () => BR_FAREWELL,
     closingInFlow: () => BR_FAREWELL,
     inactivityFarewell: () => BR_FAREWELL,
@@ -294,9 +307,11 @@ const COUNTRY_STRINGS = {
   // la organización (su matriz no tiene sus contactos): recuerda sus temas.
   CO: {
     ...colombiaAgentStrings(CO_TOPICS),
-    fallbackNoExcel: () => `Entiendo lo que necesitas 💙, pero sobre ese tema no tengo información por ahora.
-
-Donde sí puedo orientarte es en tus documentos, la protección de tus hijos, el acceso a salud y colegio, y el trabajo. ¿Te ayudo con alguno de esos temas?`,
+    fallbackNoExcel: () => `Entiendo lo que necesitas 💙, pero sobre ese tema no tengo información por ahora.\n\nDonde sí puedo orientarte es en tus documentos, la protección de tus hijos, el acceso a salud y colegio, y el trabajo. ¿Te ayudo con alguno de esos temas?`,
+    // Contactos: tampoco deriva a la organización.
+    contactFallback: () => `Gracias por contarme. Por ahora no tengo un contacto específico para eso por aquí.\n\nSi quieres, puedo orientarte con la información y los contactos de las instituciones que sí tengo sobre tu tema.`,
+    contactNotFound: () => `No tengo ese contacto por aquí. Si quieres, puedo darte los contactos de las instituciones que sí tengo sobre tu tema.`,
+    clarificationDefault: () => `¿Sobre qué tema te puedo orientar: tus documentos, la protección de tus hijos, salud y colegio, o trabajo?`,
     ...INACTIVITY_FAREWELL,
   },
 };

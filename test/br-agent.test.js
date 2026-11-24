@@ -70,3 +70,17 @@ test("BR: respuestas cortas como el agente de prueba (40 palabras; 65 por paso)"
 test("BR: el saludo en medio de la conversación también dice Aldeias Infantis SOS - Brasil", () => {
   assert.match(strings("BR").smallTalk(), /^Olá! Sou a Maria, assistente virtual da Aldeias Infantis SOS - Brasil\. 🧸/);
 });
+
+test("CO y BR no derivan a los canales de la organización; PE sí", () => {
+  const org = "Aldeas Infantiles SOS";
+  for (const cc of ["CO", "BR"]) {
+    const s = strings(cc);
+    for (const k of ["fallbackNoExcel", "contactFallback", "contactNotFound", "clarificationDefault"]) {
+      assert.doesNotMatch(s[k](org), /canales oficiales|canais oficiais|servicios de|serviços da/, `${cc} ${k}`);
+    }
+    assert.match(langDirective(cc), /SIN DERIVAR A LA ORGANIZACIÓN/);
+    assert.ok(langDirective(cc).trimEnd().endsWith("sí puedes darlos."), cc);
+  }
+  assert.match(strings("PE").contactNotFound(org), /canales oficiales/);
+  assert.doesNotMatch(langDirective("PE"), /SIN DERIVAR/);
+});
