@@ -13,7 +13,7 @@ const { isContactRequest, usesStrictContact, usesReexplain } = require("../rag-s
 
 test("BR se presenta como Maria y pide aceptar la política de privacidad con el botón Aceito", () => {
   const s = strings("BR");
-  assert.match(s.consentText("Ana"), /^Olá, Ana, que bom ter você aqui! Sou a Maria, assistente virtual da Aldeias Infantis SOS\. 🧸/);
+  assert.match(s.consentText("Ana"), /^Olá, Ana, que bom ter você aqui! Sou a Maria, assistente virtual da Aldeias Infantis SOS - Brasil. 🧸/);
   assert.match(s.consentText(), /^Olá, que bom ter você aqui!/);
   assert.match(s.consentText("Ana"), /Você aceita a Política de Privacidade da Aldeias Infantis SOS\?/);
   assert.match(s.consentText("Ana"), /https:\/\/www\.aldeiasinfantis\.org\.br\/privacidade-e-seguranca$/);
@@ -55,4 +55,9 @@ test("pedidos de contacto en portugués solo cuentan en BR", () => {
   }
   assert.strictEqual(isContactRequest("Qual o endereço?", "PE"), false);
   assert.strictEqual(isContactRequest("Meu filho pode estudar no Brasil?", "BR"), false);
+});
+
+test("BR: respuestas cortas como el agente de prueba (40 palabras; 65 por paso)", () => {
+  assert.ok(langDirective("BR").includes('Máximo 40 palabras en total. Si presentas un paso ("Paso X de N"), hasta 65 palabras.'));
+  assert.ok(langDirective("PE").includes("Máximo 50 palabras en total."));
 });

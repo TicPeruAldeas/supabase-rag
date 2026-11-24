@@ -49,7 +49,7 @@ function usesRichFormat(countryCode) {
 // generación, así que tiene prioridad sobre "máximo 4 líneas / sin listas".
 // Largo máximo de la respuesta por país (palabras; y en un paso del paso a paso).
 // XT (agente de prueba) responde un poco más corto que PE.
-const MAX_WORDS = { XT: [40, 65] };
+const MAX_WORDS = { XT: [40, 65], BR: [40, 65] };
 const DEFAULT_MAX_WORDS = [50, 80];
 
 const richFormatDirective = ([maxWords, maxStepWords]) => `
@@ -219,7 +219,7 @@ function brazilAgentStrings(topics) {
   return {
     consentText: (userName) => {
       const saudacao = userName ? `Olá, ${userName}, que bom ter você aqui!` : "Olá, que bom ter você aqui!";
-      return `${saudacao} Sou a Maria, assistente virtual da Aldeias Infantis SOS. 🧸 Estou aqui para te ajudar com as dúvidas e informações de que você precisar sobre migração no Brasil!\n\nDurante a nossa conversa, alguns dados podem ser coletados. Você aceita a Política de Privacidade da Aldeias Infantis SOS? Acesse nossa Política de Privacidade no link: https://www.aldeiasinfantis.org.br/privacidade-e-seguranca`;
+      return `${saudacao} Sou a Maria, assistente virtual da Aldeias Infantis SOS - Brasil. 🧸 Estou aqui para te ajudar com as dúvidas e informações de que você precisar sobre migração no Brasil!\n\nDurante a nossa conversa, alguns dados podem ser coletados. Você aceita a Política de Privacidade da Aldeias Infantis SOS? Acesse nossa Política de Privacidade no link: https://www.aldeiasinfantis.org.br/privacidade-e-seguranca`;
     },
     consentButtonTitle: () => "Aceito",
     welcome: () => `Obrigada! Posso te ajudar com estes temas:\n\n${topics}\n\nQual a sua pergunta?`,
