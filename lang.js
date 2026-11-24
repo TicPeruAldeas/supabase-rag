@@ -39,7 +39,7 @@ RÓTULOS EM PORTUGUÊS (OBRIGATÓRIO): as instruções acima estão em espanhol,
 // con viñetas, y su saludo lista las categorías de su base de conocimiento.
 // Desde oct. 2026 PE usa lo mismo que XT, y desde nov. 2026 también BR
 // (Producto 3), con sus propios textos en portugués. CO no cambia por ahora.
-const RICH_FORMAT_COUNTRIES = new Set(["XT", "PE", "BR"]);
+const RICH_FORMAT_COUNTRIES = new Set(["XT", "PE", "BR", "CO"]);
 
 function usesRichFormat(countryCode) {
   return RICH_FORMAT_COUNTRIES.has(String(countryCode || "").toUpperCase());
@@ -49,7 +49,7 @@ function usesRichFormat(countryCode) {
 // generación, así que tiene prioridad sobre "máximo 4 líneas / sin listas".
 // Largo máximo de la respuesta por país (palabras; y en un paso del paso a paso).
 // XT (agente de prueba) responde un poco más corto que PE.
-const MAX_WORDS = { XT: [40, 65], BR: [40, 65] };
+const MAX_WORDS = { XT: [40, 65], BR: [40, 65], CO: [40, 65] };
 const DEFAULT_MAX_WORDS = [50, 80];
 
 const richFormatDirective = ([maxWords, maxStepWords]) => `
@@ -203,6 +203,29 @@ function peruAgentStrings(topics, agentName = "Agente Perú Multipaís") {
   };
 }
 
+// CO: las 4 categorías de su matriz (V8, nov. 2026), con ejemplos de sus subtemas.
+const CO_TOPICS = [
+  "📄 *Regularización y documentación:* PPT, visas, renovación, apostilla y documentos de tus hijos",
+  "🛡️ *Protección infantil y familiar:* violencia, abuso, separación familiar y trata de personas",
+  "🤝 *Acceso a derechos:* salud, colegio, identificación y convalidación de estudios",
+  "💼 *Empleabilidad y permanencia:* derechos laborales, empleo, emprendimiento y pensión",
+].join("\n");
+
+// Agente de Colombia: igual que el agente de prueba (XT), presentándose como
+// "asistente virtual de Aldeas Infantiles SOS - Colombia".
+function colombiaAgentStrings(topics) {
+  const base = peruAgentStrings(topics);
+  const quien = "el asistente virtual de Aldeas Infantiles SOS - Colombia";
+  return {
+    ...base,
+    consentText: (userName) => {
+      const saludo = userName ? `¡Hola, ${userName}! 👋` : "¡Hola! 👋";
+      return `${saludo} Bienvenido/a 😊. Soy ${quien}. Estoy aquí para orientarte sobre documentos, tus derechos y la protección de tus hijos, sin importar tu situación migratoria. *Todo lo que me cuentes es confidencial.*\n\nPresiona "Continuar" y empecemos 👇`;
+    },
+    smallTalk: () => `¡Hola! 😊 Soy ${quien}. Cuéntame qué necesitas. Puedo orientarte sobre:\n\n${topics}\n\n${XT_TOPICS_CLOSING}`,
+  };
+}
+
 // BR (en portugués): las 3 categorías de su matriz (V8, nov. 2026).
 const BR_TOPICS = [
   "📄 *Regularização e Documentação:* situação migratória, refúgio, residência e documentos dos seus filhos",
@@ -267,6 +290,15 @@ const COUNTRY_STRINGS = {
   },
   // BR (Producto 3): agente "Maria", en portugués. CO no cambia por ahora.
   BR: brazilAgentStrings(BR_TOPICS),
+  // CO (Producto 3): igual que el agente de prueba. Sin información no deriva a
+  // la organización (su matriz no tiene sus contactos): recuerda sus temas.
+  CO: {
+    ...colombiaAgentStrings(CO_TOPICS),
+    fallbackNoExcel: () => `Entiendo lo que necesitas 💙, pero sobre ese tema no tengo información por ahora.
+
+Donde sí puedo orientarte es en tus documentos, la protección de tus hijos, el acceso a salud y colegio, y el trabajo. ¿Te ayudo con alguno de esos temas?`,
+    ...INACTIVITY_FAREWELL,
+  },
 };
 
 // ── Agente de PRUEBA (XT) en portugués ────────────────────────

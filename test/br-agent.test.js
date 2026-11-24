@@ -41,12 +41,17 @@ test("BR: el idioma va al final del prompt, después del formato", () => {
   assert.match(d, /"Passo 1 de 3:"/);
 });
 
-test("CO no cambia: sin formato nuevo, sin textos de Maria", () => {
-  assert.strictEqual(langDirective("CO"), "");
-  assert.strictEqual(usesStrictContact("CO"), false);
-  assert.strictEqual(usesReexplain("CO"), false);
-  assert.doesNotMatch(strings("CO").consentText("Ana"), /Maria/);
-  assert.strictEqual(strings("CO").consentButtonTitle(), "Continuar");
+test("CO: igual que el agente de prueba, en español, sin textos de Maria", () => {
+  const s = strings("CO");
+  assert.doesNotMatch(langDirective("CO"), /português/);
+  assert.doesNotMatch(s.consentText("Ana"), /Maria/);
+  assert.strictEqual(s.consentButtonTitle(), "Continuar");
+  for (const cat of ["Regularización y documentación", "Protección infantil y familiar", "Acceso a derechos", "Empleabilidad y permanencia"]) {
+    assert.ok(s.welcome("Ana").includes(`*${cat}:*`), cat);
+  }
+  assert.match(s.fallbackNoExcel(), /no tengo información por ahora/);
+  assert.doesNotMatch(s.fallbackNoExcel("Aldeas Infantiles SOS Colombia"), /canales oficiales/);
+  assert.match(s.inactivityFarewell(), /^Parece que ya no estás por aquí/);
 });
 
 test("pedidos de contacto en portugués solo cuentan en BR", () => {
