@@ -992,8 +992,51 @@ function rerankModelParams(countryCode) {
   return { model: CLAUDE_MODEL, temperature: 0 };
 }
 
+// ── Pregunta casi idéntica a la de una fila ───────────────────
+// Si lo que escribió la persona contiene TODAS las palabras de la pregunta de
+// una fila candidata (y casi nada más), esa fila es la que pidió, aunque otra
+// fila tenga más similitud semántica (p. ej. por tener una respuesta más corta).
+// Caso real (BR): "Como faço para solicitar refúgio?" elegía la informativa
+// "Posso solicitar refúgio no Brasil?" en vez de la guía paso a paso con esa
+// misma pregunta.
+function questionTokens(text) {
+  return stripAccents(String(text || "").toLowerCase())
+    .replace(/[^a-z0-9ñ\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function questionMatchScore(userText, rowQuestion) {
+  const rowTokens = [...new Set(questionTokens(rowQuestion))];
+  const userTokens = new Set(questionTokens(userText));
+  if (rowTokens.length < 3 || userTokens.size === 0) return 0;
+  const shared = rowTokens.filter(t => userTokens.has(t)).length;
+  if (shared < rowTokens.length) return 0;            // faltan palabras de la fila
+  const precision = shared / userTokens.size;          // cuánto de lo escrito es la fila
+  return precision >= 0.7 ? precision : 0;
+}
+
+function findQuestionMatch(texts, candidates) {
+  let best = null;
+  for (const item of candidates) {
+    for (const text of texts) {
+      const score = questionMatchScore(text, item.question);
+      if (score > 0 && (!best || score > best.score
+        || (score === best.score && (item.similarity ?? 0) > (best.item.similarity ?? 0)))) {
+        best = { item, score };
+      }
+    }
+  }
+  return best ? best.item : null;
+}
+
 async function chooseBestFlowCandidate(countryCode, question, candidates, opts = {}) {
   if (!Array.isArray(candidates) || candidates.length === 0) return null;
+
+  // La persona escribió (casi) la misma pregunta de una fila: se usa esa fila.
+  const texts = [opts.originalQuestion, question].filter(Boolean);
+  const exact = findQuestionMatch(texts, candidates);
+  if (exact) return { ...exact, question_match: true };
 
   const top = candidates[0];
   // XT también se salta el reranker cuando el 1.º le saca ventaja clara al 2.º.
@@ -2207,7 +2250,7 @@ async function askAI(userId, countryCode, question, options = {}) {
             recordAnalysis(analysis);
             const candidate = analysis && !analysis.topic_changed
               ? null
-              : await searchFlow(countryCode, analysis?.standalone_query || question);
+              : await searchFlow(countryCode, analysis?.standalone_query || question, { originalQuestion: question });
             if (candidate) {
               Object.assign(traceMetrics, {
                 active_flow_new_intent_candidate_found: 1,
@@ -2348,7 +2391,7 @@ async function askAI(userId, countryCode, question, options = {}) {
         // interpretación (la reescritura puede perder la palabra "teléfono").
         const contactRequest = isContactRequest(question, countryCode) || isContactRequest(searchQuery, countryCode);
         if (contactRequest) traceMetrics.contact_request = 1;
-        let flow = precomputedFlow ?? await searchFlow(countryCode, searchQuery, { contactRequest });
+        let flow = precomputedFlow ?? await searchFlow(countryCode, searchQuery, { contactRequest, originalQuestion: question });
 
         // 5.5 SEGUIMIENTO SIN MATCH — es un seguimiento de la última respuesta y
         //     la búsqueda no trajo nada: se responde desde el contenido del último
@@ -2483,6 +2526,9 @@ async function askAI(userId, countryCode, question, options = {}) {
 
 module.exports = {
   askAI,
+  // Elección de fila cuando la pregunta es casi idéntica a la de la matriz.
+  findQuestionMatch,
+  chooseBestFlowCandidate,
   saveConversationTurn,
   // Menú de temas para la bienvenida tras el consentimiento (server.js).
   buildTopicsMenu,
