@@ -413,15 +413,29 @@ async function isMidStepFlow(from, countryCode) {
 
 const inactivityTimers = createInactivityTimers(INACTIVITY_FAREWELL_MS, (key, ctx) =>
   runSerialized(key, async () => {
-    // Si quedó una encuesta sin responder, se cierra con esta despedida.
+    // Si ya hubo encuesta en esta conversación (respondida o no), solo se despide.
+    const surveyedAlready = Boolean(surveyStore.get(key));
     surveyStore.clear(key);
     const midSteps = await isMidStepFlow(ctx.from, ctx.countryCode);
     const s = strings(ctx.countryCode);
-    const message = midSteps ? s.inactivityFarewellSteps() : s.inactivityFarewell();
-    await sendWhatsAppMessage(ctx.from, message, ctx.phoneNumberId, ctx.token);
+    // Países con encuesta: la despedida lleva la pregunta y los botones (salvo
+    // a mitad de un paso a paso, donde se invita a retomarlo).
+    const withSurvey = usesSurvey(ctx.countryCode) && !surveyedAlready && !midSteps;
+    const message = withSurvey
+      ? s.surveyInactivityFarewell()
+      : (midSteps ? s.inactivityFarewellSteps() : s.inactivityFarewell());
+    if (withSurvey) {
+      await sendWhatsAppButton(ctx.from, message, [
+        { id: SURVEY_GOOD_ID, title: s.surveyGoodTitle() },
+        { id: SURVEY_IMPROVE_ID, title: s.surveyImproveTitle() },
+      ], ctx.phoneNumberId, ctx.token);
+      surveyStore.set(key, "rating", true);
+    } else {
+      await sendWhatsAppMessage(ctx.from, message, ctx.phoneNumberId, ctx.token);
+    }
     await saveConversationTurn({
       userId: ctx.from, countryCode: ctx.countryCode, role: "assistant", message, source: "whatsapp",
-      metadata: { event: "inactivity_farewell", phone_number_id: ctx.incomingPhoneNumberId },
+      metadata: { event: "inactivity_farewell", survey: withSurvey, phone_number_id: ctx.incomingPhoneNumberId },
     }).catch((err) => console.error("Error guardando despedida:", err.message));
     console.log(`👋 [${ctx.countryCode}] ${ctx.from} — despedida por inactividad`);
   })
@@ -480,6 +494,9 @@ async function handleSurveyReply({ from, text, buttonId, countryCode, phoneNumbe
   };
 
   // Calificación: botón, o texto equivalente mientras la pregunta está abierta.
+  // late: la encuesta vino con la despedida automática (o ya venció): al
+  // calificar solo se agradece, sin volver a despedirse.
+  const late = surveyStore.isLate(key);
   const rating = isSurveyButton || stage === "rating" ? classifyRating(buttonId, text) : null;
   if (rating) {
     await saveConversationTurn({
@@ -490,12 +507,13 @@ async function handleSurveyReply({ from, text, buttonId, countryCode, phoneNumbe
     }).catch((err) => console.error("Error guardando calificación:", err.message));
     if (rating === "good") {
       surveyStore.set(key, "done");
-      await reply(s.surveyThanksGood(), "survey_thanks");
+      await reply(late ? s.surveyThanksGoodLate() : s.surveyThanksGood(), "survey_thanks");
     } else {
-      surveyStore.set(key, "comment");
+      surveyStore.set(key, "comment", late);
       await reply(s.surveyAskComment(), "survey_ask_comment");
-      // Si no escribe el comentario, a los 10 minutos recibe igual la despedida.
-      scheduleFarewell({ from, countryCode, phoneNumberId, token, incomingPhoneNumberId });
+      // Si no escribe el comentario, a los 10 minutos recibe la despedida
+      // (si ya fue despedida, no se le vuelve a escribir).
+      if (!late) scheduleFarewell({ from, countryCode, phoneNumberId, token, incomingPhoneNumberId });
     }
     console.log(`📝 [${countryCode}] ${from} — calificación: ${rating}`);
     return true;
@@ -508,7 +526,7 @@ async function handleSurveyReply({ from, text, buttonId, countryCode, phoneNumbe
       userId: from, countryCode, role: "user", message: text, source: "whatsapp",
       metadata: { event: "survey_comment", comment: text, wa_message_id: messageId, phone_number_id: incomingPhoneNumberId },
     }).catch((err) => console.error("Error guardando comentario:", err.message));
-    await reply(s.surveyThanksComment(), "survey_thanks");
+    await reply(late ? s.surveyThanksCommentLate() : s.surveyThanksComment(), "survey_thanks");
     console.log(`📝 [${countryCode}] ${from} — comentario de mejora recibido`);
     return true;
   }

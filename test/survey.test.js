@@ -43,3 +43,21 @@ test("BR: textos de la encuesta en portugués y botones de hasta 20 caracteres",
   assert.match(s.surveyThanksGood(), /A Aldeias Infantis SOS e a Maria agradecem pelo contato/);
   assert.match(s.surveyThanksComment(), /A Aldeias Infantis SOS e a Maria agradecem pelo contato/);
 });
+
+test("BR: la despedida automática lleva la encuesta; al calificar después solo agradece", () => {
+  const s = strings("BR");
+  assert.match(s.surveyInactivityFarewell(), /^A Aldeias Infantis SOS e a Maria agradecem pelo contato/);
+  assert.match(s.surveyInactivityFarewell(), /nossa conversa foi boa ou pode melhorar\?$/);
+  assert.doesNotMatch(s.surveyThanksGoodLate(), /agradecem pelo contato/);
+  assert.doesNotMatch(s.surveyThanksCommentLate(), /agradecem pelo contato/);
+});
+
+test("la encuesta recuerda si vino con la despedida automática", () => {
+  let t = 0;
+  const store = createSurveyStore(30 * 60 * 1000, () => t);
+  store.set("BR:1", "rating");
+  assert.strictEqual(store.isLate("BR:1"), false);
+  store.set("BR:2", "rating", true);
+  assert.strictEqual(store.isLate("BR:2"), true);
+  assert.strictEqual(store.isLate("BR:3"), true); // sin estado (vencido o tras reinicio)
+});

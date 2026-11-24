@@ -237,6 +237,11 @@ function brazilAgentStrings(topics) {
     surveyThanksGood: () => `Que bom! Obrigada pela sua avaliação 😊\n\n${BR_FAREWELL}`,
     surveyAskComment: () => "Obrigada! O que podemos melhorar? Escreva em poucas palavras.",
     surveyThanksComment: () => `Obrigada pelo seu comentário, ele nos ajuda a melhorar 💙\n\n${BR_FAREWELL}`,
+    // Encuesta junto con la despedida automática (10 min sin escribir): la
+    // persona ya fue despedida, así que al calificar solo se agradece.
+    surveyInactivityFarewell: () => `${BR_FAREWELL}\n\nSe puder, conte para a gente: nossa conversa foi boa ou pode melhorar?`,
+    surveyThanksGoodLate: () => "Que bom! Obrigada pela sua avaliação 😊",
+    surveyThanksCommentLate: () => "Obrigada pelo seu comentário, ele nos ajuda a melhorar 💙",
   };
 }
 

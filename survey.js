@@ -41,9 +41,12 @@ function looksLikeQuery(text) {
 }
 
 function createSurveyStore(ttlMs = SURVEY_TTL_MS, now = () => Date.now()) {
-  const pending = new Map(); // `${país}:${usuario}` → { stage: "rating" | "comment", ts }
+  // `${país}:${usuario}` → { stage: "rating" | "comment" | "done", late, ts }. "late": la
+  // encuesta llegó junto con la despedida automática (la persona ya fue despedida).
+  const pending = new Map();
   return {
-    set(key, stage) { pending.set(key, { stage, ts: now() }); },
+    set(key, stage, late = false) { pending.set(key, { stage, late, ts: now() }); },
+    isLate(key) { const hit = pending.get(key); return hit ? Boolean(hit.late) : true; },
     get(key) {
       const hit = pending.get(key);
       if (!hit) return null;
